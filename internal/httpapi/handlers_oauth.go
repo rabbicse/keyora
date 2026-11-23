@@ -39,6 +39,7 @@ var loginPage = template.Must(template.New("login").Parse(`<!doctype html>
 body { margin:0; min-height:100vh; display:grid; place-items:center; padding:16px; background:var(--bg); color:var(--fg);
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 main { width:100%; max-width:380px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:28px; }
+.logo { display:block; margin:0 0 18px; }
 h1 { font-size:1.35rem; margin:0 0 4px; }
 p { margin:0 0 20px; color:var(--muted); }
 label { display:block; font-size:.9rem; margin:14px 0 6px; }
@@ -51,6 +52,13 @@ button { width:100%; margin-top:22px; padding:11px; font:inherit; font-weight:60
 </head>
 <body>
 <main>
+<svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="44" height="44" role="img" aria-label="Keyora">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3B6BFF"/><stop offset="1" stop-color="#7A3CF0"/></linearGradient></defs>
+<rect width="96" height="96" rx="22" fill="url(#g)"/>
+<circle cx="33" cy="48" r="13" fill="none" stroke="#fff" stroke-width="7"/>
+<path d="M46 48H60M60 48 76 30M60 48H78M60 48 76 66" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="33" cy="48" r="3.5" fill="#fff"/>
+</svg>
 <h1>Sign in</h1>
 <p>to continue to <strong>{{.AppName}}</strong></p>
 {{if .Error}}<div class="error" role="alert">{{.Error}}</div>{{end}}
