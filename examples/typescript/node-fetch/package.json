@@ -1,0 +1,19 @@
+{
+  "name": "keyora-example-node-fetch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A command-line walkthrough of the Keyora HTTP API using only Node's built-in fetch and crypto.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
