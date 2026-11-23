@@ -1,0 +1,21 @@
+# Reverse proxy for Keyora with automatic HTTPS.
+# Start Keyora with:
+#   KEYORA_ISSUER=https://id.example.com
+#   KEYORA_TRUST_PROXY_HEADERS=true
+#   KEYORA_HTTP_ADDR=127.0.0.1:8080
+
+id.example.com {
+	# Metrics are unauthenticated: answer 404 to the outside world.
+	@metrics path /metrics
+	respond @metrics 404
+
+	request_body {
+		max_size 1MB
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		# Overwrite rather than append, so the right-most (trusted) entry
+		# is the address Caddy itself saw.
+		header_up X-Forwarded-For {remote_host}
+	}
+}

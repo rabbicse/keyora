@@ -1,0 +1,15 @@
+.git
+.github
+data
+bin
+docs
+examples
+deploy
+**/node_modules
+**/.venv
+**/target
+**/bin
+**/obj
+*.db
+*.pem
+.env

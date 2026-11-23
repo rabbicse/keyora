@@ -1,0 +1,45 @@
+# Local development stack: Keyora backed by PostgreSQL.
+#
+#   export KEYORA_ADMIN_KEY="$(openssl rand -hex 32)"
+#   docker compose up -d --build
+#
+# For a single container with an embedded SQLite database instead, see
+# deploy/docker-compose.sqlite.yml.
+services:
+  keyora:
+    build: .
+    image: keyora:dev
+    ports:
+      - "8080:8080"
+    environment:
+      KEYORA_ADMIN_KEY: ${KEYORA_ADMIN_KEY:?set KEYORA_ADMIN_KEY, for example with openssl rand -hex 32}
+      KEYORA_ISSUER: ${KEYORA_ISSUER:-http://localhost:8080}
+      KEYORA_DB_DRIVER: postgres
+      KEYORA_DB_DSN: postgres://keyora:${POSTGRES_PASSWORD:-keyora-dev-password}@postgres:5432/keyora?sslmode=disable
+      KEYORA_LOG_FORMAT: ${KEYORA_LOG_FORMAT:-json}
+    volumes:
+      - keyora-keys:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: keyora
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-keyora-dev-password}
+      POSTGRES_DB: keyora
+    volumes:
+      - keyora-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keyora -d keyora"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  # Signing keys. Losing this volume invalidates every issued access token.
+  keyora-keys:
+  keyora-postgres:

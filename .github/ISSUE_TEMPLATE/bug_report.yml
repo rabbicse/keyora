@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Keyora does not behave as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not report security vulnerabilities here.** Follow [SECURITY.md](https://github.com/rabbicse/keyora/blob/master/SECURITY.md) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Ideally the exact requests (curl) and responses, including the `request_id`. Remove secrets and tokens.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Keyora version
+      description: Output of `keyora version`, or the commit hash.
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options: [SQLite, PostgreSQL, In-memory]
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: How is it deployed?
+      description: Binary or Docker, operating system, reverse proxy if any.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Remove secrets and tokens first.
+      render: json

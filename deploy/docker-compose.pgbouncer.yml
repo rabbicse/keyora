@@ -1,0 +1,59 @@
+# Keyora -> PgBouncer (transaction pooling) -> PostgreSQL.
+#
+#   export KEYORA_ADMIN_KEY="$(openssl rand -hex 32)"
+#   docker compose -f deploy/docker-compose.pgbouncer.yml up -d --build
+#
+# KEYORA_DB_PGBOUNCER=true is what makes this safe: Keyora then sends no named
+# prepared statements, which transaction pooling cannot guarantee to keep.
+services:
+  keyora:
+    build: ..
+    image: keyora:dev
+    ports:
+      - "8080:8080"
+    environment:
+      KEYORA_ADMIN_KEY: ${KEYORA_ADMIN_KEY:?set KEYORA_ADMIN_KEY, for example with openssl rand -hex 32}
+      KEYORA_ISSUER: ${KEYORA_ISSUER:-http://localhost:8080}
+      KEYORA_DB_DRIVER: postgres
+      KEYORA_DB_DSN: postgres://keyora:${POSTGRES_PASSWORD:-keyora-dev-password}@pgbouncer:5432/keyora?sslmode=disable
+      KEYORA_DB_PGBOUNCER: "true"
+      # Keyora's own pool can be larger than PgBouncer's server pool: that is the point of a pooler.
+      KEYORA_DB_MAX_OPEN_CONNS: "50"
+    volumes:
+      - keyora-keys:/data
+    depends_on:
+      pgbouncer:
+        condition: service_started
+    restart: unless-stopped
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DATABASE_URL: postgres://keyora:${POSTGRES_PASSWORD:-keyora-dev-password}@postgres:5432/keyora
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "20"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: keyora
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-keyora-dev-password}
+      POSTGRES_DB: keyora
+    volumes:
+      - keyora-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keyora -d keyora"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  keyora-keys:
+  keyora-postgres:

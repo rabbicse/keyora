@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.24.x", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Formatting
+        run: make fmt-check
+      - name: Core module has zero dependencies
+        run: make check-deps
+      - name: Vet
+        run: go vet ./...
+      - name: Test (race detector, coverage)
+        run: go test -count=1 -race -coverpkg=./... -coverprofile=coverage.out ./...
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -n 1
+      - name: Fuzz security-sensitive parsers (short)
+        run: |
+          go test -run '^$' -fuzz FuzzVerify -fuzztime 20s ./jwt/
+          go test -run '^$' -fuzz FuzzPasswordVerify -fuzztime 20s ./internal/security/
+      - uses: actions/upload-artifact@v4
+        if: matrix.go == 'stable'
+        with:
+          name: coverage
+          path: coverage.out
+
+  server:
+    name: Server binary (SQLite + PostgreSQL + PgBouncer)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: keyora
+          POSTGRES_PASSWORD: keyora
+          POSTGRES_DB: keyora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U keyora"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: cmd/keyora/go.sum
+      - name: Vet
+        working-directory: cmd/keyora
+        run: go vet ./...
+      - name: Start PgBouncer (transaction pooling, no prepared-statement support)
+        run: |
+          docker run -d --name pgbouncer --network host \
+            -e DATABASE_URL='postgres://keyora:keyora@127.0.0.1:5432/keyora' \
+            -e LISTEN_PORT=6432 -e POOL_MODE=transaction -e AUTH_TYPE=scram-sha-256 \
+            -e MAX_PREPARED_STATEMENTS=0 edoburu/pgbouncer:latest
+          sleep 5
+      - name: Test against SQLite, PostgreSQL and PgBouncer
+        working-directory: cmd/keyora
+        env:
+          KEYORA_TEST_POSTGRES_DSN: postgres://keyora:keyora@localhost:5432/keyora?sslmode=disable
+          KEYORA_TEST_PGBOUNCER_DSN: postgres://keyora:keyora@localhost:6432/keyora?sslmode=disable
+        run: go test -count=1 -race ./...
+      - name: PostgreSQL tests were not skipped
+        working-directory: cmd/keyora
+        env:
+          KEYORA_TEST_POSTGRES_DSN: postgres://keyora:keyora@localhost:5432/keyora?sslmode=disable
+        run: |
+          go test -count=1 -v -run TestPostgresConformance ./... | grep -q -- '--- PASS: TestPostgresConformance'
+
+  adapters:
+    name: Gin adapter and Go examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: adapters/gin/go.sum
+      - name: Test Gin adapter
+        working-directory: adapters/gin
+        run: go vet ./... && go test -count=1 -race ./...
+      - name: Build Go examples
+        run: |
+          (cd examples/golang/standard-library && go vet ./... && go build ./...)
+          (cd examples/golang/gin && go vet ./... && go build ./...)
+
+  security:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: govulncheck
+        run: make vuln
+
+  openapi:
+    name: OpenAPI lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: make lint-openapi
+
+  docker:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build --build-arg VERSION=ci -t keyora:ci .
+      - name: Start and wait for health
+        run: |
+          docker run -d --name keyora -p 8080:8080 \
+            -e KEYORA_ADMIN_KEY=ci-admin-key-0123456789abcdef0123456789 keyora:ci
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' keyora)" = "healthy" ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' keyora | grep -q healthy || { docker logs keyora; exit 1; }
+      - name: Smoke test
+        run: |
+          curl -fsS http://localhost:8080/readyz
+          curl -fsS http://localhost:8080/.well-known/jwks.json | grep -q '"kty":"RSA"'
+          curl -fsS -X POST http://localhost:8080/api/v1/tenants \
+            -H 'Authorization: Bearer ci-admin-key-0123456789abcdef0123456789' \
+            -H 'Content-Type: application/json' -d '{"slug":"ci","name":"CI"}' | grep -q '"slug":"ci"'
