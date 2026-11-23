@@ -1,0 +1,1720 @@
+openapi: 3.0.3
+info:
+  title: Keyora API
+  version: 0.1.0
+  description: |
+    Keyora is a self-hosted identity and authentication platform.
+
+    **Response envelope.** Every `/api/v1` endpoint (except those under `/api/v1/oauth/`, which
+    follow RFC 6749) answers with one envelope: `data` on success, `error` on failure,
+    and `meta.request_id` always. List endpoints add `meta.pagination`.
+
+    **Three kinds of caller.**
+
+    | Caller | Credential | Used for |
+    |---|---|---|
+    | Application | `client_id` + `client_secret` (HTTP Basic or JSON body). Public applications send `client_id` only. | `/auth/*` |
+    | End user | `Authorization: Bearer <access_token>` | `/users/me*` |
+    | Administrator | `Authorization: Bearer <KEYORA_ADMIN_KEY>` (all tenants), or the access token of a user holding `keyora:admin` (own tenant only) | `/tenants*` |
+
+    **Rate limiting.** `/api/v1/auth/*` and `/api/v1/oauth/*` are limited per client IP and
+    answer `429 rate_limited` with a `Retry-After` header.
+  license:
+    name: GPL-3.0
+    url: https://www.gnu.org/licenses/gpl-3.0.html
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Authentication
+    description: Sign-up, sign-in and token lifecycle. Called with application credentials.
+  - name: OAuth 2.0
+    description: Authorization code flow with PKCE, refresh and client credentials, in the RFCs' wire formats.
+  - name: Account recovery
+    description: Email verification and password reset.
+  - name: Self-service
+    description: What a signed-in user can do with their own account.
+  - name: Tenants
+    description: The isolation boundary. Creating and suspending tenants needs the root admin key.
+  - name: Applications
+    description: The clients of a tenant and their credentials, origins and token lifetimes.
+  - name: Users
+    description: Administrative user management inside one tenant.
+  - name: Roles and permissions
+    description: Role-based access control. Roles group permissions; users are assigned roles.
+  - name: Sessions and audit
+    description: Inspect and revoke sessions, and read the security audit trail.
+  - name: Operations
+    description: Health, metrics and key discovery. Not versioned and not enveloped.
+
+paths:
+  /livez:
+    get:
+      tags: [Operations]
+      operationId: livez
+      summary: Liveness probe
+      description: Returns 200 whenever the process is running. Does not touch the database.
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/Health" }
+  /readyz:
+    get:
+      tags: [Operations]
+      operationId: readyz
+      summary: Readiness probe
+      description: Returns 200 when the database answers a ping within 2 seconds, otherwise 503.
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/Health" }
+        "503": { $ref: "#/components/responses/Health" }
+  /healthz:
+    get:
+      tags: [Operations]
+      operationId: healthz
+      summary: Alias of /readyz
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/Health" }
+        "503": { $ref: "#/components/responses/Health" }
+  /metrics:
+    get:
+      tags: [Operations]
+      operationId: metrics
+      summary: Prometheus metrics
+      description: |
+        Request counts and latency histograms in Prometheus text format, labelled by route
+        pattern. Unauthenticated: restrict it at your reverse proxy, or disable it with
+        `KEYORA_METRICS_ENABLED=false`.
+      security: []
+      responses:
+        "200":
+          description: Metrics
+          content:
+            text/plain: { schema: { type: string } }
+  /.well-known/jwks.json:
+    get:
+      tags: [Operations]
+      operationId: jwks
+      summary: Public signing keys (JWKS)
+      description: |
+        The RSA public keys that verify Keyora access tokens, as an RFC 7517 key set.
+        Cache it (the response allows 5 minutes) and refetch when you meet an unknown `kid`.
+      security: []
+      responses:
+        "200":
+          description: JSON Web Key Set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JWKS" }
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [OAuth 2.0]
+      operationId: oauthMetadata
+      summary: Authorization server metadata (RFC 8414)
+      description: |
+        Lets OAuth client libraries discover the endpoints, supported grants and PKCE
+        methods. OpenID Connect clients should use `/.well-known/openid-configuration`.
+      security: []
+      responses:
+        "200":
+          description: Metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issuer: { type: string }
+                  authorization_endpoint: { type: string }
+                  token_endpoint: { type: string }
+                  jwks_uri: { type: string }
+                  response_types_supported: { type: array, items: { type: string } }
+                  response_modes_supported: { type: array, items: { type: string } }
+                  grant_types_supported: { type: array, items: { type: string } }
+                  code_challenge_methods_supported: { type: array, items: { type: string } }
+                  token_endpoint_auth_methods_supported: { type: array, items: { type: string } }
+                  authorization_response_iss_parameter_supported: { type: boolean }
+  /.well-known/openid-configuration:
+    get:
+      tags: [OAuth 2.0]
+      operationId: oidcDiscovery
+      summary: OpenID Provider configuration
+      description: |
+        OpenID Connect discovery document. Keyora implements the authorization code flow
+        with PKCE, RS256 ID tokens with `nonce`, the `openid`, `email` and `profile`
+        scopes and the userinfo endpoint. It has not been through OpenID certification.
+      security: []
+      responses:
+        "200":
+          description: Provider metadata
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /api/v1/openapi.yaml:
+    get:
+      tags: [Operations]
+      operationId: openapi
+      summary: This document
+      security: []
+      responses:
+        "200":
+          description: OpenAPI description
+          content:
+            application/yaml: { schema: { type: string } }
+
+  /api/v1/auth/register:
+    post:
+      tags: [Authentication]
+      operationId: register
+      summary: Register a user
+      description: Creates a user in the calling application's tenant and sends a verification email.
+      security: [{ clientBasic: [] }, {}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ClientCredentials"
+                - type: object
+                  required: [email, password]
+                  properties:
+                    email: { type: string, format: email, example: ada@example.com }
+                    password: { type: string, format: password, minLength: 8, maxLength: 256 }
+                    name: { type: string, maxLength: 200, example: Ada Lovelace }
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/User" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/InvalidClient" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Sign in with email and password
+      description: |
+        Opens a session and returns an access token (RS256 JWT) and a single-use refresh token.
+
+        Unknown email and wrong password are indistinguishable (`401 invalid_credentials`).
+        After `KEYORA_MAX_FAILED_LOGINS` consecutive failures the account is locked and
+        answers `423 account_locked` with `Retry-After` until the lock expires.
+      security: [{ clientBasic: [] }, {}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ClientCredentials"
+                - type: object
+                  required: [email, password]
+                  properties:
+                    email: { type: string, format: email }
+                    password: { type: string, format: password }
+      responses:
+        "200":
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: "#/components/schemas/Tokens"
+                      - type: object
+                        properties:
+                          user: { $ref: "#/components/schemas/User" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "423": { $ref: "#/components/responses/Locked" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/refresh:
+    post:
+      tags: [Authentication]
+      operationId: refresh
+      summary: Exchange a refresh token for new tokens
+      description: |
+        Rotates the refresh token: the one you send stops working and a new one is returned.
+        Sending a refresh token a second time is treated as theft — the whole session is
+        revoked and the call answers `401 refresh_token_reused`. Never retry a refresh with
+        the same token; store the new one before using the new access token.
+      security: [{ clientBasic: [] }, {}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ClientCredentials"
+                - type: object
+                  required: [refresh_token]
+                  properties:
+                    refresh_token: { type: string }
+      responses:
+        "200":
+          description: New tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Tokens" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Sign out (revoke the session)
+      description: |
+        Two forms, both revoke the session and both return 204:
+
+        1. Application credentials plus `refresh_token` in the body. Always succeeds, even
+           for an unknown token.
+        2. No body, `Authorization: Bearer <access_token>`.
+
+        Already-issued access tokens keep verifying *offline* until they expire; use
+        introspection where immediate revocation matters.
+      security: [{ clientBasic: [] }, { userToken: [] }, {}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ClientCredentials"
+                - type: object
+                  properties:
+                    refresh_token: { type: string }
+      responses:
+        "204": { description: Signed out }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/introspect:
+    post:
+      tags: [Authentication]
+      operationId: introspect
+      summary: Check a token's live state
+      description: |
+        Asks Keyora whether an access token is valid *right now*: signature, expiry, session
+        not revoked, user and tenant active. Roles and permissions in the answer are current,
+        not the snapshot inside the token.
+
+        Requires a confidential application of the same tenant as the token. Any invalid,
+        foreign or revoked token yields `{"active": false}` with status 200.
+      security: [{ clientBasic: [] }, {}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ClientCredentials"
+                - type: object
+                  required: [token]
+                  properties:
+                    token: { type: string }
+      responses:
+        "200":
+          description: Token state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Introspection" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/InvalidClient" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/email-verification/request:
+    post:
+      tags: [Account recovery]
+      operationId: requestEmailVerification
+      summary: Re-send the verification email
+      description: Answers 202 whether or not the address has an unverified account.
+      security: [{ clientBasic: [] }, {}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailRequest" }
+      responses:
+        "202": { description: Accepted }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/InvalidClient" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/email-verification/confirm:
+    post:
+      tags: [Account recovery]
+      operationId: confirmEmail
+      summary: Confirm an email address
+      description: Consumes the single-use token from the verification email (valid 24 hours).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, example: kyv_... }
+      responses:
+        "204": { description: Email verified }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/password/forgot:
+    post:
+      tags: [Account recovery]
+      operationId: forgotPassword
+      summary: Start a password reset
+      description: Emails a reset token (valid 1 hour). Answers 202 whether or not the address has an account.
+      security: [{ clientBasic: [] }, {}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailRequest" }
+      responses:
+        "202": { description: Accepted }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/InvalidClient" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/password/reset:
+    post:
+      tags: [Account recovery]
+      operationId: resetPassword
+      summary: Finish a password reset
+      description: Sets the new password, revokes every session of the user and clears any lockout.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties:
+                token: { type: string, example: kyp_... }
+                new_password: { type: string, format: password, minLength: 8 }
+      responses:
+        "204": { description: Password changed }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/oauth/authorize:
+    get:
+      tags: [OAuth 2.0]
+      operationId: authorize
+      summary: Authorization endpoint (hosted sign-in page)
+      description: |
+        Starts the OAuth 2.0 authorization code flow (RFC 6749 section 4.1). Send the
+        user's **browser** here; Keyora shows its sign-in page and, after a successful
+        sign-in, redirects to `redirect_uri` with `code`, `state` and `iss` (RFC 9207).
+
+        PKCE (RFC 7636) is mandatory for every application and only `S256` is accepted.
+
+        If `client_id` is unknown or `redirect_uri` is not registered exactly, Keyora
+        shows an error page and does **not** redirect. Other problems are reported to the
+        application as `error` and `error_description` on the redirect.
+      security: []
+      parameters:
+        - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
+        - { name: client_id, in: query, required: true, schema: { type: string } }
+        - name: redirect_uri
+          in: query
+          required: true
+          description: Must equal one of the application's registered `redirect_uris`, character for character.
+          schema: { type: string }
+        - name: code_challenge
+          in: query
+          required: true
+          description: "`BASE64URL(SHA256(code_verifier))`, 43 characters."
+          schema: { type: string }
+        - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
+        - name: state
+          in: query
+          description: Opaque value returned unchanged. Use it to bind the response to the browser session.
+          schema: { type: string, maxLength: 512 }
+        - name: scope
+          in: query
+          description: |
+            `openid` adds an ID token to the token response; `email` and `profile` add
+            those claims to it. Other values are echoed. API access is governed by roles
+            and permissions, not scopes.
+          schema: { type: string, maxLength: 512 }
+        - name: nonce
+          in: query
+          description: OpenID Connect nonce, returned in the ID token.
+          schema: { type: string, maxLength: 512 }
+      responses:
+        "200":
+          description: Sign-in page
+          content:
+            text/html: { schema: { type: string } }
+        "303":
+          description: Redirect to `redirect_uri` with an `error` parameter (invalid request).
+        "400":
+          description: Unknown client or unregistered redirect URI. An error page; no redirect.
+          content:
+            text/html: { schema: { type: string } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      tags: [OAuth 2.0]
+      operationId: authorizeSubmit
+      summary: Sign-in form submission
+      description: |
+        Posted by Keyora's own sign-in page; applications do not call this. Carries the
+        authorization request, the user's credentials and a CSRF token matched against a
+        cookie set by the page.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [csrf_token, response_type, client_id, redirect_uri, code_challenge, code_challenge_method, email, password]
+              properties:
+                csrf_token: { type: string }
+                response_type: { type: string, enum: [code] }
+                client_id: { type: string }
+                redirect_uri: { type: string }
+                state: { type: string }
+                scope: { type: string }
+                nonce: { type: string }
+                code_challenge: { type: string }
+                code_challenge_method: { type: string, enum: [S256] }
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "303":
+          description: Signed in. Redirect to `redirect_uri` with `code`, `state` and `iss`.
+        "400":
+          description: Unknown client or unregistered redirect URI. An error page; no redirect.
+          content:
+            text/html: { schema: { type: string } }
+        "401":
+          description: Wrong credentials. The sign-in page again, with a message.
+          content:
+            text/html: { schema: { type: string } }
+        "403":
+          description: Missing or stale CSRF token, or the account may not sign in. The sign-in page again.
+          content:
+            text/html: { schema: { type: string } }
+        "423":
+          description: Account locked. The sign-in page again.
+          content:
+            text/html: { schema: { type: string } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/oauth/token:
+    post:
+      tags: [OAuth 2.0]
+      operationId: oauthToken
+      summary: Token endpoint
+      description: |
+        OAuth 2.0 token endpoint (RFC 6749 section 3.2). The request is form-encoded and
+        the response is the RFC's JSON, **not** the Keyora envelope.
+
+        | `grant_type` | Parameters | Who |
+        |---|---|---|
+        | `authorization_code` | `code`, `redirect_uri`, `code_verifier` | Any application. Confidential ones also authenticate. |
+        | `refresh_token` | `refresh_token` | Any application. Rotates the refresh token. |
+        | `client_credentials` | — | Confidential applications. Token identifies the application itself. |
+
+        Confidential applications authenticate with HTTP Basic or `client_id` +
+        `client_secret` in the form. Public applications send `client_id` only.
+
+        An authorization code works once and for 60 seconds. Presenting a code a second
+        time revokes the session it opened. Every unusable code or refresh token answers
+        `400 invalid_grant` without saying why.
+      security: [{ clientBasic: [] }, {}]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type]
+              properties:
+                grant_type: { type: string, enum: [authorization_code, refresh_token, client_credentials] }
+                code: { type: string, description: For `authorization_code`. }
+                redirect_uri: { type: string, description: For `authorization_code`. Must equal the one sent to the authorization endpoint. }
+                code_verifier: { type: string, description: "For `authorization_code`. 43-128 characters from `A-Z a-z 0-9 - . _ ~`." }
+                refresh_token: { type: string, description: For `refresh_token`. }
+                client_id: { type: string }
+                client_secret: { type: string }
+      responses:
+        "200":
+          description: Tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer }
+                  refresh_token: { type: string, description: Absent for `client_credentials`. }
+                  refresh_expires_in: { type: integer }
+                  session_id: { type: string }
+                  scope: { type: string }
+                  id_token: { type: string, description: "Present when the `openid` scope was requested." }
+        "400": { $ref: "#/components/responses/OAuthError" }
+        "401": { $ref: "#/components/responses/OAuthError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/oauth/userinfo:
+    get:
+      tags: [OAuth 2.0]
+      operationId: userinfo
+      summary: OpenID Connect userinfo
+      description: Claims about the user behind the access token. Plain JSON, not the Keyora envelope.
+      security: [{ userToken: [] }]
+      responses:
+        "200":
+          description: User claims
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sub: { type: string }
+                  email: { type: string }
+                  email_verified: { type: boolean }
+                  name: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/users/me:
+    get:
+      tags: [Self-service]
+      operationId: getMe
+      summary: Current user with live roles and permissions
+      security: [{ userToken: [] }]
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Profile" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    patch:
+      tags: [Self-service]
+      operationId: updateMe
+      summary: Change your display name
+      security: [{ userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 200 }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/User" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/users/me/password:
+    post:
+      tags: [Self-service]
+      operationId: changePassword
+      summary: Change your password
+      description: Revokes every other session of the user; the calling session stays signed in.
+      security: [{ userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, format: password }
+                new_password: { type: string, format: password, minLength: 8 }
+      responses:
+        "204": { description: Password changed }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/users/me/sessions:
+    get:
+      tags: [Self-service]
+      operationId: listMySessions
+      summary: Your active sessions (devices)
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200": { $ref: "#/components/responses/SessionList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/users/me/sessions/{session_id}:
+    delete:
+      tags: [Self-service]
+      operationId: revokeMySession
+      summary: Sign out one of your devices
+      security: [{ userToken: [] }]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Session revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/tenants:
+    post:
+      tags: [Tenants]
+      operationId: createTenant
+      summary: Create a tenant
+      description: Root only. Seeds the tenant with the `keyora:admin` permission and the `keyora-admin` role.
+      security: [{ adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug, name]
+              properties:
+                slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,62}$", example: acme }
+                name: { type: string, maxLength: 200, example: Acme Inc. }
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Tenant" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    get:
+      tags: [Tenants]
+      operationId: listTenants
+      summary: List tenants
+      description: Root only.
+      security: [{ adminKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Tenants, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Tenant" } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/tenants/{tenant_id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Tenants]
+      operationId: getTenant
+      summary: Get a tenant
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "200":
+          description: Tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Tenant" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Tenants]
+      operationId: updateTenant
+      summary: Rename or suspend a tenant
+      description: |
+        Root only. Suspending a tenant immediately rejects its applications' credentials and
+        its users' tokens on Keyora's API and through introspection.
+      security: [{ adminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 200 }
+                status: { type: string, enum: [active, suspended] }
+      responses:
+        "200":
+          description: Updated tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Tenant" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/tenants/{tenant_id}/applications:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    post:
+      tags: [Applications]
+      operationId: createApplication
+      summary: Register an application
+      description: |
+        `confidential` applications (servers) receive a `client_secret`, returned **only in
+        this response**; Keyora stores a hash. `public` applications (browser and mobile
+        apps) have no secret and must list the origins they are served from.
+      security: [{ adminKey: [] }, { userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ApplicationInput"
+                - type: object
+                  required: [name]
+                  properties:
+                    type: { type: string, enum: [confidential, public], default: confidential }
+      responses:
+        "201":
+          description: Application created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationWithSecret" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    get:
+      tags: [Applications]
+      operationId: listApplications
+      summary: List applications
+      security: [{ adminKey: [] }, { userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Applications, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Application" } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/tenants/{tenant_id}/applications/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Applications]
+      operationId: getApplication
+      summary: Get an application
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Application" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Applications]
+      operationId: updateApplication
+      summary: Update an application
+      description: Omitted fields keep their value. `type` cannot change.
+      security: [{ adminKey: [] }, { userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ApplicationInput"
+                - type: object
+                  properties:
+                    status: { type: string, enum: [active, disabled] }
+      responses:
+        "200": { $ref: "#/components/responses/Application" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Applications]
+      operationId: deleteApplication
+      summary: Delete an application and its sessions
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/tenants/{tenant_id}/applications/{id}/rotate-secret:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    post:
+      tags: [Applications]
+      operationId: rotateApplicationSecret
+      summary: Issue a new client secret
+      description: The previous secret stops working immediately. Confidential applications only.
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "200":
+          description: Application with its new secret
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationWithSecret" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/tenants/{tenant_id}/users:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create a user as an administrator
+      security: [{ adminKey: [] }, { userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 8 }
+                name: { type: string, maxLength: 200 }
+                email_verified: { type: boolean, default: false }
+      responses:
+        "201": { $ref: "#/components/responses/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: List users
+      security: [{ adminKey: [] }, { userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: email
+          in: query
+          description: Case-insensitive substring match on the email address.
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, disabled] }
+      responses:
+        "200":
+          description: Users, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/User" } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/tenants/{tenant_id}/users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: Get a user
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Users]
+      operationId: updateUser
+      summary: Update a user
+      description: Setting `status` to `disabled` revokes all of the user's sessions. Email and password cannot be changed here.
+      security: [{ adminKey: [] }, { userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 200 }
+                status: { type: string, enum: [active, disabled] }
+                email_verified: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Users]
+      operationId: deleteUser
+      summary: Delete a user with their sessions and role assignments
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/tenants/{tenant_id}/users/{id}/unlock:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    post:
+      tags: [Users]
+      operationId: unlockUser
+      summary: Clear a brute-force lockout
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/tenants/{tenant_id}/users/{id}/roles:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Users]
+      operationId: listUserRoles
+      summary: Roles assigned to a user
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "200":
+          description: Roles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Role" } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/tenants/{tenant_id}/users/{id}/roles/{role_id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+      - name: role_id
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      tags: [Users]
+      operationId: assignRole
+      summary: Assign a role to a user
+      description: Idempotent. The new role appears in access tokens issued from now on (next login or refresh).
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "204": { description: Assigned }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Users]
+      operationId: unassignRole
+      summary: Remove a role from a user
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "204": { description: Removed }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/tenants/{tenant_id}/permissions:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    post:
+      tags: [Roles and permissions]
+      operationId: createPermission
+      summary: Define a permission
+      description: Permissions are free-form names you choose, such as `orders:read`. The `keyora:` prefix is reserved.
+      security: [{ adminKey: [] }, { userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9:_.-]{0,99}$", example: "orders:read" }
+                description: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: Permission created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Permission" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    get:
+      tags: [Roles and permissions]
+      operationId: listPermissions
+      summary: List permissions
+      security: [{ adminKey: [] }, { userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Permissions, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Permission" } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/tenants/{tenant_id}/permissions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    delete:
+      tags: [Roles and permissions]
+      operationId: deletePermission
+      summary: Delete a permission and detach it from every role
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/tenants/{tenant_id}/roles:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    post:
+      tags: [Roles and permissions]
+      operationId: createRole
+      summary: Create a role
+      security: [{ adminKey: [] }, { userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9:_.-]{0,99}$", example: editor }
+                description: { type: string, maxLength: 500 }
+                permissions:
+                  type: array
+                  description: Names of existing permissions.
+                  items: { type: string }
+      responses:
+        "201": { $ref: "#/components/responses/Role" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    get:
+      tags: [Roles and permissions]
+      operationId: listRoles
+      summary: List roles
+      security: [{ adminKey: [] }, { userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Roles, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Role" } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/tenants/{tenant_id}/roles/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Roles and permissions]
+      operationId: getRole
+      summary: Get a role
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Role" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Roles and permissions]
+      operationId: updateRole
+      summary: Rename or describe a role
+      security: [{ adminKey: [] }, { userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string, maxLength: 500 }
+      responses:
+        "200": { $ref: "#/components/responses/Role" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Roles and permissions]
+      operationId: deleteRole
+      summary: Delete a role and unassign it from every user
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/tenants/{tenant_id}/roles/{id}/permissions:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    put:
+      tags: [Roles and permissions]
+      operationId: setRolePermissions
+      summary: Replace a role's permissions
+      security: [{ adminKey: [] }, { userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions: { type: array, items: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Role" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/tenants/{tenant_id}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Sessions and audit]
+      operationId: listSessions
+      summary: List sessions
+      security: [{ adminKey: [] }, { userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: user_id
+          in: query
+          schema: { type: string }
+        - name: active
+          in: query
+          description: "`true` hides revoked and expired sessions."
+          schema: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/SessionList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/tenants/{tenant_id}/sessions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/ID"
+    delete:
+      tags: [Sessions and audit]
+      operationId: revokeSession
+      summary: Revoke a session
+      security: [{ adminKey: [] }, { userToken: [] }]
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/tenants/{tenant_id}/audit-events:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Sessions and audit]
+      operationId: listAuditEvents
+      summary: Security audit trail
+      security: [{ adminKey: [] }, { userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: type
+          in: query
+          description: Exact event type, for example `user.login.failed` or `token.reuse_detected`.
+          schema: { type: string }
+        - name: actor_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Events, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/AuditEvent" } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+components:
+  securitySchemes:
+    clientBasic:
+      type: http
+      scheme: basic
+      description: "`client_id` as username and `client_secret` as password. They may be sent in the JSON body instead."
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token from `/api/v1/auth/login`.
+    adminKey:
+      type: http
+      scheme: bearer
+      description: The value of `KEYORA_ADMIN_KEY`.
+  parameters:
+    TenantID:
+      name: tenant_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+  responses:
+    Health:
+      description: Health status
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, enum: [ok, unavailable] }
+              database: { type: string, enum: [up, down] }
+              version: { type: string }
+    BadRequest:
+      description: |
+        Malformed or invalid request. Codes: `invalid_json`, `validation_failed` (with
+        per-field `details`), `unsupported_media_type`, `invalid_input`,
+        `invalid_verification_token`, `not_confidential`. Bodies over 1 MiB answer 413
+        `payload_too_large`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: validation_failed
+              message: request validation failed
+              details: { password: must be at least 8 characters }
+            meta: { request_id: 5b0c1f0e-6a3e-4a37-9a7e-0f3c3c0c2a11 }
+    Unauthorized:
+      description: |
+        Authentication failed. Codes: `unauthenticated`, `invalid_token`, `invalid_client`,
+        `invalid_credentials`, `invalid_refresh_token`, `refresh_token_reused`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InvalidClient:
+      description: Application credentials are missing or wrong (`invalid_client`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: |
+        Authenticated but not allowed. Codes: `forbidden`, `origin_not_allowed`,
+        `account_disabled`, `email_not_verified`, `reserved`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: The resource does not exist in this tenant (`not_found`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: "A uniqueness rule was violated. Codes: `email_taken`, `slug_taken`, `name_taken`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Locked:
+      description: The account is temporarily locked (`account_locked`).
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds until the lock expires. }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Too many requests from this IP (`rate_limited`).
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds to wait. }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    OAuthError:
+      description: RFC 6749 error response.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, enum: [invalid_request, invalid_client, invalid_grant, unsupported_grant_type] }
+              error_description: { type: string }
+    User:
+      description: User
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: "#/components/schemas/User" }
+              meta: { $ref: "#/components/schemas/Meta" }
+    Role:
+      description: Role
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: "#/components/schemas/Role" }
+              meta: { $ref: "#/components/schemas/Meta" }
+    Application:
+      description: Application (never includes the secret)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: "#/components/schemas/Application" }
+              meta: { $ref: "#/components/schemas/Meta" }
+    SessionList:
+      description: Sessions, newest first
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { type: array, items: { $ref: "#/components/schemas/Session" } }
+              meta: { $ref: "#/components/schemas/Meta" }
+  schemas:
+    Meta:
+      type: object
+      required: [request_id]
+      properties:
+        request_id:
+          type: string
+          description: Also returned in the `X-Request-ID` header. Send your own `X-Request-ID` to correlate.
+        pagination:
+          type: object
+          description: Present on list endpoints.
+          properties:
+            limit: { type: integer }
+            offset: { type: integer }
+            total: { type: integer, description: Total matching rows before paging. }
+    Error:
+      type: object
+      required: [error, meta]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, description: "Stable and machine-readable. Branch on this." }
+            message: { type: string, description: Human-readable; may change. }
+            details:
+              type: object
+              additionalProperties: { type: string }
+        meta: { $ref: "#/components/schemas/Meta" }
+    ClientCredentials:
+      type: object
+      description: Only needed when not using HTTP Basic authentication.
+      properties:
+        client_id: { type: string, example: app_3f2c9d1e8b7a4c5d9e0f1a2b3c4d5e6f }
+        client_secret: { type: string, description: Confidential applications only. Never send from a browser. }
+    EmailRequest:
+      allOf:
+        - $ref: "#/components/schemas/ClientCredentials"
+        - type: object
+          required: [email]
+          properties:
+            email: { type: string, format: email }
+    Tokens:
+      type: object
+      properties:
+        access_token: { type: string, description: RS256 JWT. Verify it with the JWKS. }
+        token_type: { type: string, enum: [Bearer] }
+        expires_in: { type: integer, description: Access token lifetime in seconds., example: 900 }
+        refresh_token: { type: string, description: Opaque and single use., example: kyr_... }
+        refresh_expires_in: { type: integer, description: Seconds until the session expires if unused. }
+        session_id: { type: string, format: uuid }
+    AccessTokenClaims:
+      type: object
+      description: Payload of the access token JWT (documentation only; not an API response).
+      properties:
+        iss: { type: string, description: KEYORA_ISSUER. Verify it. }
+        sub: { type: string, description: User ID (or client_id for client-credentials tokens). }
+        aud: { type: string, description: client_id of the application that signed the user in. Verify it. }
+        exp: { type: integer }
+        nbf: { type: integer }
+        iat: { type: integer }
+        jti: { type: string }
+        sid: { type: string, description: Session ID. Absent on client-credentials tokens. }
+        tid: { type: string, description: Tenant ID. }
+        client_id: { type: string }
+        email: { type: string }
+        roles: { type: array, items: { type: string } }
+        permissions: { type: array, items: { type: string } }
+    Introspection:
+      type: object
+      required: [active]
+      properties:
+        active: { type: boolean }
+        sub: { type: string }
+        tid: { type: string }
+        client_id: { type: string }
+        sid: { type: string }
+        email: { type: string }
+        roles: { type: array, items: { type: string } }
+        permissions: { type: array, items: { type: string } }
+        iss: { type: string }
+        exp: { type: integer }
+        iat: { type: integer }
+    JWKS:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              kty: { type: string, enum: [RSA] }
+              use: { type: string, enum: [sig] }
+              alg: { type: string, enum: [RS256] }
+              kid: { type: string }
+              n: { type: string }
+              e: { type: string }
+    Tenant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ApplicationInput:
+      type: object
+      properties:
+        name: { type: string, maxLength: 200, description: Unique within the tenant. }
+        redirect_uris:
+          type: array
+          description: Where the authorization code flow may send users back. Absolute URIs, matched exactly; no wildcards or fragments.
+          items: { type: string, format: uri }
+        allowed_origins:
+          type: array
+          description: Browser origins allowed to call Keyora for this application, e.g. `https://app.example.com`.
+          items: { type: string }
+        access_token_ttl_seconds: { type: integer, minimum: 60, maximum: 86400 }
+        refresh_token_ttl_seconds: { type: integer, maximum: 31536000 }
+    Application:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        name: { type: string }
+        type: { type: string, enum: [confidential, public] }
+        client_id: { type: string }
+        redirect_uris: { type: array, items: { type: string } }
+        allowed_origins: { type: array, items: { type: string } }
+        access_token_ttl_seconds: { type: integer }
+        refresh_token_ttl_seconds: { type: integer }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ApplicationWithSecret:
+      allOf:
+        - $ref: "#/components/schemas/Application"
+        - type: object
+          properties:
+            client_secret:
+              type: string
+              description: Shown once. Absent for public applications.
+              example: kys_...
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        status: { type: string, enum: [active, disabled] }
+        email_verified: { type: boolean }
+        locked_until: { type: string, format: date-time }
+        last_login_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Profile:
+      allOf:
+        - $ref: "#/components/schemas/User"
+        - type: object
+          properties:
+            roles: { type: array, items: { type: string } }
+            permissions: { type: array, items: { type: string } }
+    Permission:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+    Role:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        permissions: { type: array, items: { type: string } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        ip: { type: string }
+        user_agent: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        type: { type: string, example: user.login.succeeded }
+        actor_type: { type: string, enum: [user, application, root, anonymous] }
+        actor_id: { type: string }
+        target_id: { type: string }
+        ip: { type: string }
+        user_agent: { type: string }
+        request_id: { type: string }
+        metadata: { type: object, additionalProperties: { type: string } }
+        created_at: { type: string, format: date-time }

@@ -1,0 +1,10 @@
+# Lint configuration for api/openapi.yaml (npx @redocly/cli lint api/openapi.yaml)
+extends:
+  - recommended
+rules:
+  # The spec documents a self-hosted server; localhost is the honest default.
+  no-server-example.com: off
+  # AccessTokenClaims documents the JWT payload, which no endpoint returns directly.
+  no-unused-components: off
+  # Health, metrics and discovery endpoints have no client-error responses.
+  operation-4xx-response: off
