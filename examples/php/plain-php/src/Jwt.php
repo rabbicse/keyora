@@ -17,8 +17,8 @@ final class TokenException extends RuntimeException
 /**
  * Verifies Keyora access tokens (RS256 JWTs) with the openssl extension only.
  *
- * All five checks are required: pinned algorithm, signature against the JWKS
- * key named by "kid", expiry, issuer and audience.
+ * All six checks are required: pinned algorithm, signature against the JWKS
+ * key named by "kid", expiry, issuer, audience and token use.
  */
 final class Jwt
 {
@@ -108,6 +108,12 @@ final class Jwt
         $audiences = is_array($aud) ? $aud : [$aud];
         if (!in_array($this->audience, $audiences, true)) {
             throw new TokenException('invalid_token', 'the access token was issued to another application');
+        }
+
+        // 6. Token use: an OIDC ID token has the same issuer and audience as an
+        //    access token, so only this claim keeps it from being used as one.
+        if (($claims['token_use'] ?? null) !== 'access') {
+            throw new TokenException('invalid_token', 'the token is not an access token');
         }
 
         return $claims;

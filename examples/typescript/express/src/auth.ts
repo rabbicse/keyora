@@ -74,7 +74,7 @@ export function createAuth(config: Pick<Config, "keyoraUrl" | "issuer" | "client
       return;
     }
     try {
-      // All five checks from examples/README.md happen in this call:
+      // The first five checks from examples/README.md happen in this call:
       const { payload } = await jwtVerify(token, jwks, {
         algorithms: ["RS256"], // 1. the algorithm is pinned, not taken from the token
         //                        2. the signature is verified with the JWKS key matching `kid`
@@ -82,6 +82,12 @@ export function createAuth(config: Pick<Config, "keyoraUrl" | "issuer" | "client
         audience: config.clientId, // 5. aud: tokens issued to other applications are refused
         requiredClaims: ["exp", "sub"], // 3. exp must be present (and is checked to be in the future)
       });
+      // 6. token_use: an OIDC ID token has the same issuer and audience as an
+      //    access token, so only this claim keeps it from being used as one.
+      if (payload.token_use !== "access") {
+        next(invalidToken());
+        return;
+      }
       req.user = {
         sub: payload.sub ?? "",
         email: typeof payload.email === "string" ? payload.email : "",

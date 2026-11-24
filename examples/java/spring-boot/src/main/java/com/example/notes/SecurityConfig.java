@@ -121,7 +121,7 @@ public class SecurityConfig {
     }
 
     /**
-     * Verifies access tokens with Keyora's public keys. All five checks from
+     * Verifies access tokens with Keyora's public keys. All six checks from
      * examples/README.md are configured here:
      *
      * <ol>
@@ -130,7 +130,8 @@ public class SecurityConfig {
      *       key set on first use, caches it, and refetches on an unknown {@code kid});</li>
      *   <li>{@code exp} in the future;</li>
      *   <li>{@code iss} equal to the Keyora issuer;</li>
-     *   <li>{@code aud} equal to this application's client ID.</li>
+     *   <li>{@code aud} equal to this application's client ID;</li>
+     *   <li>{@code token_use} equal to {@code access}.</li>
      * </ol>
      *
      * <p>The decoder is built from the JWKS URL directly. Spring's {@code issuer-uri}
@@ -148,7 +149,10 @@ public class SecurityConfig {
                 // Spring Security does not check the audience unless told to. Without this,
                 // a token issued to any other application on the same Keyora would be accepted.
                 new JwtClaimValidator<List<String>>(JwtClaimNames.AUD,
-                        aud -> aud != null && aud.contains(keyora.clientId()))));
+                        aud -> aud != null && aud.contains(keyora.clientId())),
+                // An OIDC ID token has the same issuer and audience as an access token:
+                // only this claim keeps it from being accepted as an API credential.
+                new JwtClaimValidator<Object>("token_use", "access"::equals)));
         return decoder;
     }
 

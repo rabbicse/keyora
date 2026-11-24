@@ -50,7 +50,7 @@ KEYORA_TEST_PGBOUNCER_DSN='postgres://keyora:keyora@127.0.0.1:56432/keyora?sslmo
 | API description | `internal/httpapi/openapi_test.go` | Every served route is in `api/openapi.yaml` and every documented route is served. |
 | Go SDK | `guard/`, `adapters/gin/` | Middleware decisions, JWKS caching, key rotation, behaviour during a Keyora outage, protection against JWKS-fetch flooding. |
 | Process | `cmd/keyora/` | The real binary wiring: configuration, migrations, serving, restart with data and keys intact, graceful shutdown, and the CLI commands. |
-| Other languages | `examples/verify.py` | The same 34 black-box checks against each example application and a live Keyora. |
+| Other languages | `examples/verify.py` | The same 35 black-box checks against each example application and a live Keyora. |
 
 ## Conventions
 

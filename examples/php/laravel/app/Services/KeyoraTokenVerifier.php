@@ -15,9 +15,9 @@ use Throwable;
 /**
  * Verifies Keyora access tokens (RS256 JWTs) locally, with firebase/php-jwt.
  *
- * All five checks are required: pinned algorithm, signature against the JWKS
- * key named by "kid", expiry, issuer and audience. php-jwt does the first
- * three; issuer and audience are checked here because php-jwt does not.
+ * All six checks are required: pinned algorithm, signature against the JWKS
+ * key named by "kid", expiry, issuer, audience and token use. php-jwt does
+ * the first three; the others are checked here because php-jwt does not.
  */
 class KeyoraTokenVerifier
 {
@@ -80,6 +80,12 @@ class KeyoraTokenVerifier
         $audiences = is_array($claims['aud'] ?? null) ? $claims['aud'] : [$claims['aud'] ?? null];
         if (! in_array(config('keyora.client_id'), $audiences, true)) {
             throw KeyoraAuthException::invalidToken('the access token was issued to another application');
+        }
+
+        // Token use: an OIDC ID token has the same issuer and audience as an
+        // access token, so only this claim keeps it from being used as one.
+        if (($claims['token_use'] ?? null) !== 'access') {
+            throw KeyoraAuthException::invalidToken('the token is not an access token');
         }
 
         return $claims;

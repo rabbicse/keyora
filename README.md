@@ -45,7 +45,7 @@ It implements three open standards and nothing proprietary:
   logging, metrics — is the Go standard library and nothing else, and a build check
   keeps it that way.
 - **It works with what you already have.** Applications in Go, TypeScript, Python,
-  Java, .NET or PHP integrate over HTTP with standard libraries. Nobody needs Go.
+  Java, .NET, PHP, Rust or Ruby integrate over HTTP with standard libraries. Nobody needs Go.
 - **Security is the default.** PKCE is mandatory, refresh tokens rotate and detect
   theft, secrets are stored only as hashes, and tenants cannot see each other.
 
@@ -113,7 +113,8 @@ You need Docker, or Go 1.26+ to build from source.
 export KEYORA_ADMIN_KEY="$(openssl rand -hex 32)"     # root management credential
 
 docker compose -f deploy/docker-compose.sqlite.yml up -d --build
-# or, from source:   make build && ./bin/keyora
+# or, from source:           make build && ./bin/keyora
+# or, the published image:   docker run -p 8080:8080 -e KEYORA_ADMIN_KEY -v keyora-data:/data ghcr.io/rabbicse/keyora
 
 curl http://localhost:8080/readyz
 # {"database":"up","status":"ok","version":"dev"}
@@ -190,8 +191,8 @@ Add `scope=openid` to receive an ID token as well. A complete client is in
 ## Examples in your language
 
 Every API example is the same small notes service, and all of them are checked by one
-script, [`examples/verify.py`](examples/verify.py), which runs 34 checks against a
-live Keyora: sign-up, sign-in, tampered and wrong-audience tokens, roles and
+script, [`examples/verify.py`](examples/verify.py), which runs 35 checks against a
+live Keyora: sign-up, sign-in, tampered and wrong-audience tokens, ID tokens, roles and
 permissions, refresh, real token expiry, logout and refresh-token replay.
 
 | Language | Examples |
@@ -202,6 +203,8 @@ permissions, refresh, real token expiry, logout and refresh-token replay.
 | Java | [Spring Boot](examples/java/spring-boot) · [plain Java](examples/java/plain-java) |
 | .NET | [ASP.NET Core](examples/dotnet/aspnet-core) |
 | PHP | [plain PHP](examples/php/plain-php) · [Laravel](examples/php/laravel) |
+| Rust | [axum](examples/rust/axum) |
+| Ruby | [Sinatra](examples/ruby/sinatra) |
 
 Start with [examples/README.md](examples/README.md).
 

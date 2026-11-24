@@ -69,12 +69,12 @@ _jwks = jwt.PyJWKClient(f"{KEYORA_URL}/.well-known/jwks.json", cache_keys=True, 
 def verify_token(token: str) -> dict:
     """Verify an access token and return its claims.
 
-    All five checks from examples/README.md happen here:
-    algorithm pinned to RS256, signature, exp, iss and aud.
+    All six checks from examples/README.md happen here:
+    algorithm pinned to RS256, signature, exp, iss, aud and token_use.
     """
     try:
         key = _jwks.get_signing_key_from_jwt(token)  # picks the key by the token's `kid`
-        return jwt.decode(
+        claims = jwt.decode(
             token,
             key.key,
             algorithms=["RS256"],  # never trust the algorithm named in the token
@@ -90,3 +90,9 @@ def verify_token(token: str) -> dict:
         # goes to the log only; the caller just learns that the token is invalid.
         log.warning("access token rejected: %s", exc)
         raise TokenInvalid(str(exc)) from exc
+    # An OIDC ID token has the same issuer and audience as an access token, so
+    # only this claim keeps it from being accepted as an API credential.
+    if claims.get("token_use") != "access":
+        log.warning("access token rejected: token_use is not 'access'")
+        raise TokenInvalid("token_use is not 'access'")
+    return claims

@@ -74,7 +74,7 @@ notes API listening on :9003 (Keyora at http://localhost:8080)
 | `npm run build` | Compiles to `dist/`. |
 | `npm run start:dist` | Runs the compiled `dist/server.js` with plain `node`. |
 
-To check the running example against the shared contract (34 checks, about 70 seconds
+To check the running example against the shared contract (35 checks, about 70 seconds
 because it waits for a token to expire; add `--skip-expiry` to skip that wait):
 
 ```sh
@@ -307,6 +307,9 @@ in [`src/auth.ts`](src/auth.ts) calls `jwtVerify` from `jose`, which checks:
 3. `exp` is in the future;
 4. `iss` equals `KEYORA_ISSUER`;
 5. `aud` equals `KEYORA_CLIENT_ID`, so tokens issued to another application are refused.
+
+The middleware then makes a sixth check itself: `token_use` equals `access`. An OIDC ID
+token has the same issuer and audience as an access token, and must not be accepted as one.
 
 The JWKS is fetched on the first protected request and cached in memory. If a token
 names an unknown `kid`, `jose` fetches the key set again, so a key rotation in Keyora

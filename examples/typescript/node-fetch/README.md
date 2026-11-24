@@ -132,7 +132,7 @@ Keyora at http://localhost:8080 (issuer http://localhost:8080), application app_
   The access token is an RS256 JWT valid for 60s; the refresh token is opaque and single-use.
 
 3. Verify the access token locally
-  Checks: alg is RS256, signature against the JWKS key named by kid, exp, iss, aud.
+  Checks: alg is RS256, signature against the JWKS key named by kid, exp, iss, aud, token_use.
   > GET /.well-known/jwks.json
   < 200 1 RSA key(s): kid=20261123T150337Z
   claims: {
@@ -275,14 +275,15 @@ keys are cached. It performs these checks, in this order:
    `<header>.<payload>` with `crypto.verify`, using a key built with
    `crypto.createPublicKey({ key: jwk, format: "jwk" })`.
 5. Only then decode the payload, and require `exp` to be in the future (and `nbf`, if
-   present, not to be), `iss` to equal `KEYORA_ISSUER`, and `aud` to equal
-   `KEYORA_CLIENT_ID`.
+   present, not to be), `iss` to equal `KEYORA_ISSUER`, `aud` to equal
+   `KEYORA_CLIENT_ID`, and `token_use` to equal `access`. The last one refuses OIDC ID
+   tokens, which have the same issuer and audience as access tokens.
 
 Step 5 of the walkthrough runs this function against forged and damaged tokens to show
 each check refusing them.
 
 The verification is written out so that it can be read. In an application, use a
-maintained JWT library and configure the same five checks, as the Express example does
+maintained JWT library and configure the same six checks, as the Express example does
 with `jose`.
 
 ### What local verification cannot see

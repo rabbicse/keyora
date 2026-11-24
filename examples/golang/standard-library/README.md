@@ -46,7 +46,7 @@ Check it:
 
 ```sh
 python3 examples/verify.py http://localhost:9001
-# 34 passed, 0 failed
+# 35 passed, 0 failed
 ```
 
 ## Example API requests

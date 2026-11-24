@@ -46,7 +46,7 @@ set -a; . examples/.env; set +a
 # notes API (Gin) listening on :9002 (Keyora at http://localhost:8080)
 
 python3 examples/verify.py http://localhost:9002
-# 34 passed, 0 failed
+# 35 passed, 0 failed
 ```
 
 ## Example API requests

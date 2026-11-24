@@ -61,7 +61,7 @@ Check it with the shared verification script, from the repository root:
 python3 examples/verify.py http://localhost:9004
 ```
 
-It should end with `34 passed, 0 failed`.
+It should end with `35 passed, 0 failed`.
 
 ## Example API requests
 
@@ -211,7 +211,8 @@ or `{"error": ..., "meta": ...}`; the example returns the `data` object on succe
 `keyora.verify_token` fetches Keyora's public keys once from
 `/.well-known/jwks.json` (cached by `jwt.PyJWKClient`) and then checks, for every
 request: the algorithm is RS256, the signature is valid, `exp` is in the future, `iss`
-equals `KEYORA_ISSUER` and `aud` equals `KEYORA_CLIENT_ID`. A token that fails only
+equals `KEYORA_ISSUER`, `aud` equals `KEYORA_CLIENT_ID` and `token_use` equals `access`
+(an OIDC ID token has the same issuer and audience, and is not an API credential). A token that fails only
 the expiry check gets `401 token_expired`, which tells the client to refresh; anything
 else gets `401 invalid_token`. The roles and permissions inside the verified token then
 decide the `403`: `require_permission` needs every permission it lists, `require_role`

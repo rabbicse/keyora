@@ -24,7 +24,7 @@ The files:
 | File | Contents |
 |---|---|
 | `Program.cs` | Configuration, service registration and the endpoints. |
-| `KeyoraAuth.cs` | JwtBearer setup (JWKS download, the five token checks, error responses) and the `RequirePermission` / `RequireRole` helpers. |
+| `KeyoraAuth.cs` | JwtBearer setup (JWKS download, the six token checks, error responses) and the `RequirePermission` / `RequireRole` helpers. |
 | `KeyoraClient.cs` | Typed `HttpClient` for Keyora's REST API. |
 
 ## Prerequisites
@@ -75,7 +75,7 @@ info: Microsoft.Hosting.Lifetime[14]
       Now listening on: http://[::]:9007
 ```
 
-To check it against the shared test (34 checks, about 70 seconds because it waits for a
+To check it against the shared test (35 checks, about 70 seconds because it waits for a
 token to expire), run this from the repository root in another terminal:
 
 ```sh
@@ -260,7 +260,9 @@ request. `Microsoft.AspNetCore.Authentication.JwtBearer` verifies the access tok
 2. the signature matches the Keyora key with the token's `kid`;
 3. `exp` is in the future, with no tolerance (`ClockSkew = TimeSpan.Zero`);
 4. `iss` equals `KEYORA_ISSUER`;
-5. `aud` equals `KEYORA_CLIENT_ID`, so tokens issued to another application are refused.
+5. `aud` equals `KEYORA_CLIENT_ID`, so tokens issued to another application are refused;
+6. `token_use` equals `access` (the `OnTokenValidated` event in `KeyoraAuth.cs`), so an
+   OIDC ID token, which has the same issuer and audience, is not accepted as an access token.
 
 Keyora publishes its public keys at `/.well-known/jwks.json` but has no OpenID Connect
 discovery document, so `options.Authority` is not used. `KeyoraAuth.cs` gives the handler

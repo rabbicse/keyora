@@ -16,7 +16,7 @@ these files over it. To use them in your own application, copy the same files.
 |---|---|
 | `config/keyora.php` | Reads the environment variables. |
 | `app/Services/KeyoraClient.php` | HTTP client for Keyora's API (Laravel `Http`, HTTP Basic client credentials). |
-| `app/Services/KeyoraTokenVerifier.php` | Token verification with `firebase/php-jwt`, plus the `iss` and `aud` checks. |
+| `app/Services/KeyoraTokenVerifier.php` | Token verification with `firebase/php-jwt`, plus the `iss`, `aud` and `token_use` checks. |
 | `app/Http/Middleware/KeyoraAuthenticate.php` | Middleware `keyora.auth`: a valid token is required. |
 | `app/Http/Middleware/KeyoraPermission.php` | Middleware `keyora.permission:<name>[,<name>]`: all listed permissions are required. |
 | `app/Http/Middleware/KeyoraRole.php` | Middleware `keyora.role:<name>[,<name>]`: one of the listed roles is required. |
@@ -120,7 +120,7 @@ server; deploy a real Laravel application behind PHP-FPM, FrankenPHP or Octane.
 python3 examples/verify.py http://localhost:9009
 ```
 
-It should end with `34 passed, 0 failed`.
+It should end with `35 passed, 0 failed`.
 
 ## Example API requests
 
@@ -265,8 +265,10 @@ have no server at all, register a `public` application in Keyora instead.
 4. `iss` must equal `KEYORA_ISSUER`.
 5. `aud` must equal `KEYORA_CLIENT_ID`. Without this check, a token issued to any other
    application on the same Keyora would be accepted.
+6. `token_use` must equal `access`. An OIDC ID token has the same issuer and audience as
+   an access token; without this check it would be accepted as one.
 
-`firebase/php-jwt` does not check issuer or audience, so 4 and 5 are explicit code in
+`firebase/php-jwt` does not check issuer, audience or token use, so 4 to 6 are explicit code in
 the verifier. Do not remove them.
 
 The JWKS is fetched from `${KEYORA_URL}/.well-known/jwks.json` and kept in the Laravel

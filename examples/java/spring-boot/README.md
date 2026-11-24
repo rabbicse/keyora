@@ -74,7 +74,7 @@ in a second terminal:
 python3 examples/verify.py http://localhost:9006
 ```
 
-It ends with `34 passed, 0 failed`. It takes a little over a minute because it waits for
+It ends with `35 passed, 0 failed`. It takes a little over a minute because it waits for
 an access token to expire; add `--skip-expiry` to skip that.
 
 ## Example API requests
@@ -260,7 +260,9 @@ is fetched on first use and cached. For every request the decoder checks:
 2. the signature, against the JWKS key whose `kid` matches;
 3. `exp` is in the future;
 4. `iss` equals `KEYORA_ISSUER`;
-5. `aud` equals `KEYORA_CLIENT_ID`.
+5. `aud` equals `KEYORA_CLIENT_ID`;
+6. `token_use` equals `access`, so an OIDC ID token, which has the same issuer and
+   audience, is not accepted as an access token.
 
 Spring Security does not check the audience unless you add a validator, so the
 configuration adds one. Without it, a token that Keyora issued to a different application

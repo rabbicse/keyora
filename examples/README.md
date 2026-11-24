@@ -21,6 +21,8 @@ to do in its own language is call a few REST endpoints and verify an RS256 JWT.
 | [`dotnet/aspnet-core`](dotnet/aspnet-core) | C# + ASP.NET Core | 9007 |
 | [`php/plain-php`](php/plain-php) | PHP, no framework | 9008 |
 | [`php/laravel`](php/laravel) | PHP + Laravel | 9009 |
+| [`rust/axum`](rust/axum) | Rust + axum | 9011 |
+| [`ruby/sinatra`](ruby/sinatra) | Ruby + Sinatra | 9012 |
 
 All but `golang/pkce` are APIs that follow the contract below and forward a login form
 to Keyora. `golang/pkce` shows the other way to sign in: redirecting the browser to
@@ -86,7 +88,7 @@ browser with the `client_id` only (see [docs/integration.md](../docs/integration
    ```
 
    It registers a user, signs in, calls protected endpoints, grants roles, refreshes,
-   waits for a token to expire, logs out and replays a refresh token — 34 checks. It applies
+   waits for a token to expire, logs out and replays a refresh token — 35 checks. It applies
    to the API examples; `golang/pkce` is driven from a browser. Add
    `--skip-expiry` to skip the 60-second wait.
 
@@ -121,16 +123,22 @@ passed through unchanged; the examples add `missing_token`, `invalid_token`,
 
 ## Verifying a token correctly
 
-Whatever library you use, all five checks are required:
+Whatever library you use, all six checks are required:
 
 1. The algorithm is **RS256** — pin it; never accept the algorithm named by the token.
 2. The **signature** verifies against the key from the JWKS whose `kid` matches.
 3. **`exp`** is in the future.
 4. **`iss`** equals your Keyora issuer.
 5. **`aud`** equals your application's `client_id`.
+6. **`token_use`** equals `"access"`.
 
 Skipping the audience check is the most common mistake: without it, a token issued to
 any other application on the same Keyora is accepted by yours.
+
+The `token_use` check is the one a JWT library will not do for you. An OIDC ID token
+(`token_use: "id"`) is signed with the same key and has the same issuer and audience as
+an access token, so the first five checks all pass. It says who signed in; it is not a
+credential for your API. Refuse any token whose `token_use` is missing or not `"access"`.
 
 ## Local verification or introspection?
 

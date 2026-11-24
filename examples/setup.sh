@@ -30,7 +30,10 @@ TENANT_ID="$(api POST /api/v1/tenants "{\"slug\":\"examples-$(date +%s)\",\"name
 T="/api/v1/tenants/$TENANT_ID"
 
 # A 60-second access token keeps the "expired token" scenario quick to observe.
-APP="$(api POST "$T/applications" '{"name":"example-app","type":"confidential","access_token_ttl_seconds":60}')"
+# The redirect URI is never visited: verify.py uses it to obtain an ID token and
+# check that the example refuses it as an API credential.
+VERIFY_REDIRECT_URI="http://localhost:9099/verify-callback"
+APP="$(api POST "$T/applications" "{\"name\":\"example-app\",\"type\":\"confidential\",\"access_token_ttl_seconds\":60,\"redirect_uris\":[\"$VERIFY_REDIRECT_URI\"]}")"
 CLIENT_ID="$(printf '%s' "$APP" | field client_id)"
 CLIENT_SECRET="$(printf '%s' "$APP" | field client_secret)"
 # A second application, used to show that tokens issued to another audience are rejected.
@@ -62,5 +65,6 @@ KEYORA_READER_ROLE_ID=$READER_ID
 KEYORA_EDITOR_ROLE_ID=$EDITOR_ID
 KEYORA_OTHER_CLIENT_ID=$(printf '%s' "$OTHER" | field client_id)
 KEYORA_OTHER_CLIENT_SECRET=$(printf '%s' "$OTHER" | field client_secret)
+KEYORA_VERIFY_REDIRECT_URI=$VERIFY_REDIRECT_URI
 ENV
 echo "Wrote $OUT (tenant $TENANT_ID, application $CLIENT_ID)"

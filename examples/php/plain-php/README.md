@@ -14,7 +14,7 @@ the [Laravel example](../laravel) uses it.
 |---|---|
 | `index.php` | Router script and the route handlers. |
 | `src/Keyora.php` | HTTP client for Keyora's API, using HTTP Basic client credentials. |
-| `src/Jwt.php` | Token verification: algorithm, signature, `exp`, `iss`, `aud`. |
+| `src/Jwt.php` | Token verification: algorithm, signature, `exp`, `iss`, `aud`, `token_use`. |
 | `src/Jwks.php` | Fetches and caches Keyora's public keys. |
 | `src/Notes.php` | The application's own data (a JSON file). Unrelated to Keyora. |
 
@@ -96,7 +96,7 @@ server does not pass the `Authorization` header to PHP, see Troubleshooting.
 python3 examples/verify.py http://localhost:9008
 ```
 
-It should end with `34 passed, 0 failed`.
+It should end with `35 passed, 0 failed`.
 
 ## Example API requests
 
@@ -243,6 +243,8 @@ server at all, register a `public` application in Keyora instead.
 4. `iss` must equal `KEYORA_ISSUER`.
 5. `aud` must equal `KEYORA_CLIENT_ID`. Without this check, a token issued to any other
    application on the same Keyora would be accepted.
+6. `token_use` must equal `access`. An OIDC ID token has the same issuer and audience as
+   an access token; without this check it would be accepted as one.
 
 Then the handler checks the token's `permissions` (all listed ones are required) or
 `roles` (any listed one is enough) and answers `403 forbidden` if they are missing.

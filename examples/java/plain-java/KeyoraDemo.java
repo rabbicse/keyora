@@ -97,7 +97,7 @@ public class KeyoraDemo {
 
         step(3, "Verify the access token locally (no call to Keyora except fetching the JWKS once)");
         Map<String, Object> claims = verifyAccessToken(accessToken);
-        System.out.println("  signature, exp, iss and aud are all valid. Claims:");
+        System.out.println("  signature, exp, iss, aud and token_use are all valid. Claims:");
         for (String name : List.of("iss", "aud", "sub", "email", "roles", "permissions", "exp")) {
             System.out.println("    " + pad(name) + Json.write(claims.get(name)));
         }
@@ -189,7 +189,7 @@ public class KeyoraDemo {
     static Map<String, RSAPublicKey> jwks = Map.of();
 
     /**
-     * Verifies an access token and returns its claims. All five checks are required;
+     * Verifies an access token and returns its claims. All six checks are required;
      * leaving any one out makes the others worthless.
      */
     static Map<String, Object> verifyAccessToken(String token) throws Exception {
@@ -261,6 +261,13 @@ public class KeyoraDemo {
         boolean forUs = CLIENT_ID.equals(aud) || (aud instanceof List<?> list && list.contains(CLIENT_ID));
         if (!forUs) {
             throw new TokenRejected("wrong_audience", "aud is " + Json.write(aud) + ", expected \"" + CLIENT_ID + "\"");
+        }
+
+        // 6. An access token, not an OIDC ID token. An ID token has the same issuer and
+        //    audience, so only the token_use claim keeps it from being accepted here.
+        if (!"access".equals(claims.get("token_use"))) {
+            throw new TokenRejected("wrong_token_use",
+                    "token_use is " + Json.write(claims.get("token_use")) + ", expected \"access\"");
         }
         return claims;
     }

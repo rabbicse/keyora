@@ -7,6 +7,8 @@ breaking changes; they are marked **Breaking**.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-24
+
 First version of Keyora, developed from the
 [auth-tutorial](https://github.com/rabbicse/go-projects/tree/main/projects/auth-tutorial)
 code. See [docs/assessment.md](docs/assessment.md) for what was kept and replaced.
@@ -46,7 +48,10 @@ code. See [docs/assessment.md](docs/assessment.md) for what was kept and replace
   own module.
 - **Examples** for Go (net/http, Gin, PKCE browser sign-in), TypeScript (Express, plain
   script), Python (FastAPI, Flask), Java (Spring Boot, plain Java), .NET (ASP.NET
-  Core) and PHP (plain PHP, Laravel), with a shared verification script.
+  Core), PHP (plain PHP, Laravel), Rust (axum) and Ruby (Sinatra), with a shared
+  verification script. Every example refuses ID tokens as API credentials.
+- **Container image** published to `ghcr.io/rabbicse/keyora` for linux/amd64 and
+  linux/arm64 on each release tag (and to Docker Hub when credentials are configured).
 
 ### Changed (relative to the tutorial)
 

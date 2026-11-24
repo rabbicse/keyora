@@ -11,11 +11,16 @@ example and a running Keyora, so all languages are held to the same bar.
 Needs Python 3.8+ and nothing else. Reads examples/.env (written by setup.sh).
 """
 import base64
+import hashlib
+import http.cookiejar
 import json
 import os
 import sys
 import time
+import re
+import secrets
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -93,7 +98,41 @@ def tamper(token):
     return ".".join([head, payload, sig[:10] + flipped + sig[11:]])
 
 
-for key in ("KEYORA_ADMIN_KEY", "KEYORA_TENANT_ID", "KEYORA_READER_ROLE_ID", "KEYORA_EDITOR_ROLE_ID", "KEYORA_OTHER_CLIENT_ID"):
+def id_token_for(email, password):
+    """Signs in through Keyora's hosted page (authorization code flow with PKCE,
+    scope=openid) as the example application and returns the ID token."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()), NoRedirect)
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    redirect_uri = ENV["KEYORA_VERIFY_REDIRECT_URI"]
+    params = {"response_type": "code", "client_id": ENV["KEYORA_CLIENT_ID"], "redirect_uri": redirect_uri,
+              "state": secrets.token_urlsafe(16), "scope": "openid email", "nonce": secrets.token_urlsafe(16),
+              "code_challenge": challenge, "code_challenge_method": "S256"}
+    page = browser.open(KEYORA + "/api/v1/oauth/authorize?" + urllib.parse.urlencode(params), timeout=20).read().decode()
+    csrf = re.search(r'name="csrf_token" value="([^"]*)"', page)
+    if not csrf:
+        sys.exit("setup problem: Keyora's sign-in page did not render")
+    form = dict(params, csrf_token=csrf.group(1), email=email, password=password)
+    try:
+        browser.open(KEYORA + "/api/v1/oauth/authorize", urllib.parse.urlencode(form).encode(), timeout=20)
+        sys.exit("setup problem: sign-in did not redirect")
+    except urllib.error.HTTPError as e:
+        location = e.headers.get("Location", "")
+    code = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query).get("code", [""])[0]
+    if not code:
+        sys.exit(f"setup problem: no authorization code in redirect {location!r}")
+    body = urllib.parse.urlencode({"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
+                                   "code_verifier": verifier, "client_id": ENV["KEYORA_CLIENT_ID"],
+                                   "client_secret": ENV["KEYORA_CLIENT_SECRET"]}).encode()
+    with urllib.request.urlopen(urllib.request.Request(KEYORA + "/api/v1/oauth/token", data=body), timeout=20) as res:
+        return json.loads(res.read()).get("id_token", "")
+
+
+for key in ("KEYORA_ADMIN_KEY", "KEYORA_TENANT_ID", "KEYORA_READER_ROLE_ID", "KEYORA_EDITOR_ROLE_ID", "KEYORA_OTHER_CLIENT_ID",
+            "KEYORA_CLIENT_ID", "KEYORA_CLIENT_SECRET", "KEYORA_VERIFY_REDIRECT_URI"):
     if key not in ENV:
         sys.exit(f"{key} is missing: run examples/setup.sh first")
 
@@ -128,6 +167,10 @@ foreign_token = (foreign.get("data") or {}).get("access_token", "")
 if not foreign_token:
     sys.exit(f"setup problem: could not mint a token for the other application: {foreign}")
 expect("a token issued to another application (wrong audience) is 401", call("GET", APP + "/me", token=foreign_token), 401, "invalid_token")
+id_token = id_token_for(email, password)
+if not id_token:
+    sys.exit("setup problem: Keyora returned no ID token")
+expect("an ID token is not accepted as an access token (token_use) is 401", call("GET", APP + "/me", token=id_token), 401, "invalid_token")
 
 print("Authorization")
 expect("GET /notes without the notes:read permission is 403", call("GET", APP + "/notes", token=access), 403, "forbidden")

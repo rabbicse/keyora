@@ -71,7 +71,7 @@ Keyora at http://localhost:8080, issuer http://localhost:8080, application app_b
 
 3. Verify the access token locally (no call to Keyora except fetching the JWKS once)
   fetched JWKS: 1 key(s), kid [20261123T150337Z]
-  signature, exp, iss and aud are all valid. Claims:
+  signature, exp, iss, aud and token_use are all valid. Claims:
     iss:         "http://localhost:8080"
     aud:         "app_ba6ba87721084f8db75a7cf017cc6b63"
     sub:         "2ef94e49-1d10-4b87-a7cc-b2c05bb7b4ab"
@@ -180,7 +180,8 @@ what a JWT library would do, in this order:
    `RSAPublicKey` from its `n` and `e` values with `RSAPublicKeySpec`.
 4. Verify the signature over `header.payload` with `Signature.getInstance("SHA256withRSA")`.
 5. Only after the signature holds, check the claims: `exp` is in the future, `iss` equals
-   `KEYORA_ISSUER`, and `aud` equals `KEYORA_CLIENT_ID`.
+   `KEYORA_ISSUER`, `aud` equals `KEYORA_CLIENT_ID`, and `token_use` equals `access`. The
+   last one refuses OIDC ID tokens, which have the same issuer and audience as access tokens.
 
 Skipping the audience check is the most common mistake. Without it, a token that Keyora
 issued to any other application would be accepted by yours.

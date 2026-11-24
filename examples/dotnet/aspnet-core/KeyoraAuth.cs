@@ -44,7 +44,7 @@ public static class KeyoraAuth
                 };
                 options.RefreshOnIssuerKeyNotFound = true;
 
-                // The five checks: algorithm, signature, expiry, issuer, audience.
+                // The first five checks: algorithm, signature, expiry, issuer, audience.
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
@@ -67,6 +67,16 @@ public static class KeyoraAuth
 
                 options.Events = new JwtBearerEvents
                 {
+                    // The sixth check, token_use: an OIDC ID token has the same issuer and
+                    // audience as an access token, so only this claim keeps it out.
+                    OnTokenValidated = context =>
+                    {
+                        if (context.Principal?.FindFirst("token_use")?.Value != "access")
+                        {
+                            context.Fail("the token is not an access token");
+                        }
+                        return Task.CompletedTask;
+                    },
                     OnChallenge = async context =>
                     {
                         context.HandleResponse();

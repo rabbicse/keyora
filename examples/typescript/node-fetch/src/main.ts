@@ -129,6 +129,7 @@ interface Claims extends Json {
   aud?: unknown;
   exp?: unknown;
   nbf?: unknown;
+  token_use?: unknown;
 }
 
 class TokenError extends Error {
@@ -191,7 +192,7 @@ function decodeSegment(segment: string, name: string): Json {
 }
 
 /**
- * Verifies an access token and returns its claims. All five checks are
+ * Verifies an access token and returns its claims. All six checks are
  * required; leaving any of them out makes the result untrustworthy.
  */
 async function verifyAccessToken(token: string, now: number = Math.floor(Date.now() / 1000)): Promise<Claims> {
@@ -232,6 +233,10 @@ async function verifyAccessToken(token: string, now: number = Math.floor(Date.no
   //    other application on the same Keyora would be accepted here.
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (!audiences.includes(CLIENT_ID)) throw new TokenError(`unexpected audience ${JSON.stringify(claims.aud)}, want "${CLIENT_ID}"`);
+
+  // 6. token_use is "access". An OIDC ID token has the same issuer and audience
+  //    as an access token, so only this claim keeps it from being used as one.
+  if (claims.token_use !== "access") throw new TokenError(`unexpected token_use ${JSON.stringify(claims.token_use)}, want "access"`);
 
   return claims;
 }
@@ -319,7 +324,7 @@ async function main(): Promise<void> {
   note(`The access token is an RS256 JWT valid for ${String(login.data.expires_in)}s; the refresh token is opaque and single-use.`);
 
   step("Verify the access token locally");
-  note("Checks: alg is RS256, signature against the JWKS key named by kid, exp, iss, aud.");
+  note("Checks: alg is RS256, signature against the JWKS key named by kid, exp, iss, aud, token_use.");
   const claims = await verifyAccessToken(accessToken);
   console.log("  claims: " + JSON.stringify(claims, null, 2).replace(/\n/g, "\n  "));
   expect(claims.sub === userId, "sub is the ID of the user registered in step 1");
