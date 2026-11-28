@@ -40,7 +40,7 @@ jobs:
         run: |
           go test -run '^$' -fuzz FuzzVerify -fuzztime 20s ./jwt/
           go test -run '^$' -fuzz FuzzPasswordVerify -fuzztime 20s ./internal/security/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.go == 'stable'
         with:
           name: coverage
