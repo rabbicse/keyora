@@ -55,9 +55,9 @@ WantedBy=multi-user.target
 ### Container
 
 ```sh
-docker build -t keyora:0.1.0 --build-arg VERSION=0.1.0 .
+docker build -t keyora:0.2.0 --build-arg VERSION=0.2.0 .
 docker run -d --name keyora -p 8080:8080 -p 9090:9090 -v keyora-data:/data \
-  -e KEYORA_ADMIN_KEY="$KEYORA_ADMIN_KEY" -e KEYORA_ISSUER=https://id.example.com keyora:0.1.0
+  -e KEYORA_ADMIN_KEY="$KEYORA_ADMIN_KEY" -e KEYORA_ISSUER=https://id.example.com keyora:0.2.0
 ```
 
 The image is distroless, runs as a non-root user, keeps all state under `/data`, and

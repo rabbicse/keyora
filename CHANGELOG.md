@@ -7,6 +7,8 @@ breaking changes; they are marked **Breaking**.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-28
+
 ### Changed
 
 - **Breaking: Keyora is API only.** The hosted sign-in page is gone: Keyora serves no
@@ -113,3 +115,6 @@ code. See [docs/assessment.md](docs/assessment.md) for what was kept and replace
 - The server no longer depends on Gin or any JWT library; the core module has no
   third-party dependencies.
 
+[Unreleased]: https://github.com/rabbicse/keyora/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/rabbicse/keyora/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/rabbicse/keyora/releases/tag/v0.1.0

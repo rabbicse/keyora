@@ -66,16 +66,20 @@ the layout; [docs/testing.md](docs/testing.md) explains the tests.
 Keyora follows [Semantic Versioning](https://semver.org). Before 1.0, minor versions
 may contain breaking changes, and the changelog calls them out.
 
-The repository holds three Go modules, each tagged with its path prefix:
+The repository holds five Go modules, each tagged with its path prefix:
 
 | Module | Tag |
 |---|---|
 | Core | `v0.2.0` |
 | Server binary | `cmd/keyora/v0.2.0` |
 | Gin adapter | `adapters/gin/v0.2.0` |
+| GraphQL transport | `transport/graphql/v0.2.0` |
+| gRPC transport | `transport/grpc/v0.2.0` |
 
 Pushing a `vX.Y.Z` tag runs the release workflow, which builds binaries and a
-container image. The nested modules use `replace` directives for in-repository
+container image and uses that version's section of `CHANGELOG.md` as the release
+notes (the release fails if the section is missing). Move the `Unreleased` entries
+under a new `## [X.Y.Z] - YYYY-MM-DD` heading before tagging. The nested modules use `replace` directives for in-repository
 development; to publish them for `go get`, the directive is replaced by a `require`
 on the tagged core version in the release commit.
 

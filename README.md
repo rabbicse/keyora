@@ -218,7 +218,7 @@ that it is ready:
 curl http://localhost:8080/readyz
 ```
 ```json
-{"database":"up","status":"ok","version":"v0.1.0"}
+{"database":"up","status":"ok","version":"v0.2.0"}
 ```
 
 The rest of the guide uses this variable:

@@ -1,7 +1,8 @@
 name: Release
 
 # Publishes binaries and a container image when a version tag is pushed.
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag -a v0.2.0 -m "Keyora 0.2.0" && git push origin v0.2.0
+# The release notes are the matching "## [X.Y.Z]" section of CHANGELOG.md.
 on:
   push:
     tags: ["v*.*.*"]
@@ -48,10 +49,18 @@ jobs:
             rm -rf "dist/${name}"
           done
           (cd dist && sha256sum * > SHA256SUMS)
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v h="## [$v]" 'index($0, h) == 1 {on=1; next} on && /^## \[/ {exit} on' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "CHANGELOG.md has no '## [$v]' section" >&2; exit 1
+          fi
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          body_path: notes.md
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') || startsWith(github.ref_name, 'v0.') }}
 
