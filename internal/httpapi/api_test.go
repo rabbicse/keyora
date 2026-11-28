@@ -602,6 +602,23 @@ func TestProxyHeaderTrust(t *testing.T) {
 	if raw := events(trusted, tid); !strings.Contains(raw, `"ip":"10.0.0.7"`) {
 		t.Fatalf("should use the right-most (proxy-appended) address, never the client-supplied one: %s", raw)
 	}
+
+	// A proxy that adds a second header line instead of extending the first:
+	// the client's line comes first and must not win.
+	req, _ := http.NewRequest("POST", trusted.srv.URL+"/api/v1/auth/register", strings.NewReader(`{"email":"b@example.com","password":"`+password+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	id, secret, _ := strings.Cut(client, ":")
+	req.SetBasicAuth(id, secret)
+	req.Header.Add("X-Forwarded-For", "9.9.9.9")
+	req.Header.Add("X-Forwarded-For", "10.0.0.8")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if raw := events(trusted, tid); !strings.Contains(raw, `"ip":"10.0.0.8"`) || strings.Contains(raw, `"ip":"9.9.9.9"`) {
+		t.Fatalf("with two X-Forwarded-For lines, the proxy's (last) line must be used: %s", raw)
+	}
 }
 
 func TestCORS(t *testing.T) {

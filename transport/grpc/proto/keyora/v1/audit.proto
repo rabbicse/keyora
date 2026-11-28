@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package keyora.v1;
+
+import "keyora/v1/types.proto";
+
+option go_package = "github.com/rabbicse/keyora/transport/grpc/keyorapb;keyorapb";
+
+// AuditService reads a tenant's security trail. It is the gRPC form of the
+// REST route /api/v1/tenants/{tenant_id}/audit-events.
+//
+// The RPC needs "authorization: Bearer <credential>" metadata, where the
+// credential is the root admin key or the access token of an administrator
+// of the tenant named in the request. An administrator of another tenant
+// gets PERMISSION_DENIED.
+service AuditService {
+  // ListAuditEvents lists the tenant's audit events, optionally filtered.
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
+}
+
+message ListAuditEventsRequest {
+  string tenant_id = 1;
+  // Page size, 1 to 100. 0 means the default of 20.
+  int32 limit = 2;
+  // Number of events to skip.
+  int32 offset = 3;
+  // Filter: events of exactly this type, for example "user.logout". Empty
+  // means all types.
+  string type = 4;
+  // Filter: events caused by this actor (a user ID or client ID). Empty means
+  // all actors.
+  string actor_id = 5;
+}
+
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
+  // Number of matching events in total, across all pages.
+  int64 total = 2;
+}

@@ -1,0 +1,135 @@
+syntax = "proto3";
+
+package keyora.v1;
+
+import "keyora/v1/types.proto";
+
+option go_package = "github.com/rabbicse/keyora/transport/grpc/keyorapb;keyorapb";
+
+// OAuthService is the OAuth 2.0 authorization code flow with PKCE, the token
+// endpoint and the OpenID Connect userinfo endpoint. It is the gRPC form of
+// the REST routes under /api/v1/oauth.
+//
+// The flow is API-only: the application collects the user's email and
+// password itself and obtains the authorization code with one call to
+// Authorize.
+//
+// Every RPC of this service counts against the per-address limit on
+// credential requests; a caller over the limit gets RESOURCE_EXHAUSTED with
+// the reason "rate_limited".
+service OAuthService {
+  // Authorize checks an authorization request and the user's credentials and
+  // returns a single-use authorization code. The code is valid for a short
+  // time (see expires_in) and is bound to the application, the redirect URI
+  // and the PKCE challenge.
+  //
+  // The application is named by client_id; no client secret is involved.
+  // PKCE with the S256 method is required for every application. If the call
+  // carries an "origin" metadata entry, that origin must be one of the
+  // application's allowed_origins.
+  //
+  // Error reasons specific to this RPC: "invalid_client" (client_id does not
+  // name an active application), "invalid_redirect_uri", "invalid_request"
+  // and "unsupported_response_type" (all INVALID_ARGUMENT), and
+  // "origin_not_allowed" (PERMISSION_DENIED). Credential failures are
+  // reported as by AuthService.Login.
+  rpc Authorize(AuthorizeRequest) returns (AuthorizeResponse);
+
+  // Token issues tokens for one of three grants, selected by grant_type:
+  //
+  //   - "authorization_code": redeems a code from Authorize. Needs code,
+  //     redirect_uri and code_verifier. A code works once; presenting it a
+  //     second time revokes the session it opened.
+  //   - "refresh_token": rotates refresh_token, as AuthService.Refresh does,
+  //     but reports every failure as "invalid_grant".
+  //   - "client_credentials": issues an access token that identifies the
+  //     application itself. Confidential applications only. The response has
+  //     no refresh token.
+  //
+  // The application authenticates as in AuthService (Basic authorization
+  // metadata, or client_id and client_secret). A public application sends
+  // client_id alone.
+  //
+  // Errors are deliberately coarse, as at an OAuth 2.0 token endpoint:
+  // UNAUTHENTICATED with reason "invalid_client" when the application cannot
+  // be authenticated, INVALID_ARGUMENT with reason "invalid_grant" when the
+  // code or refresh token is unusable, with no hint about why, and
+  // INVALID_ARGUMENT with reason "unsupported_grant_type".
+  rpc Token(TokenRequest) returns (TokenResponse);
+
+  // UserInfo returns the claims about the user behind the access token sent
+  // as "authorization: Bearer <access token>".
+  rpc UserInfo(UserInfoRequest) returns (UserInfoResponse);
+}
+
+// AuthorizeRequest is an OAuth 2.0 authorization request together with the
+// user's credentials.
+message AuthorizeRequest {
+  string client_id = 1;
+  // Must exactly match one of the application's registered redirect URIs.
+  string redirect_uri = 2;
+  // "code", which is also the default when empty.
+  string response_type = 3;
+  // Opaque value echoed in the response; at most 512 characters.
+  string state = 4;
+  // Space-separated scopes. "openid" requests an ID token; "email" and
+  // "profile" add the matching claims to it.
+  string scope = 5;
+  // OpenID Connect nonce, echoed in the ID token.
+  string nonce = 6;
+  // BASE64URL(SHA256(code_verifier)), 43 characters.
+  string code_challenge = 7;
+  // Must be "S256".
+  string code_challenge_method = 8;
+  string email = 9;
+  string password = 10;
+}
+
+message AuthorizeResponse {
+  // The authorization code. Redeem it with Token.
+  string code = 1;
+  // The state of the request.
+  string state = 2;
+  // The redirect URI the code is bound to.
+  string redirect_uri = 3;
+  // redirect_uri with code, state and iss appended: the complete OAuth 2.0
+  // authorization response as one URI.
+  string redirect_to = 4;
+  // Lifetime of the code in seconds.
+  int64 expires_in = 5;
+  // The issuer identifier of this Keyora installation.
+  string iss = 6;
+}
+
+message TokenRequest {
+  // Application credentials, unless sent as Basic authorization metadata.
+  string client_id = 1;
+  string client_secret = 2;
+  // "authorization_code", "refresh_token" or "client_credentials".
+  string grant_type = 3;
+  // authorization_code grant: the code returned by Authorize.
+  string code = 4;
+  // authorization_code grant: the redirect_uri of the authorization request.
+  string redirect_uri = 5;
+  // authorization_code grant: the PKCE verifier whose SHA-256 digest was sent
+  // as code_challenge.
+  string code_verifier = 6;
+  // refresh_token grant: the refresh token to rotate.
+  string refresh_token = 7;
+}
+
+message TokenResponse {
+  Tokens tokens = 1;
+  // authorization_code grant: the scope of the authorization request.
+  string scope = 2;
+}
+
+message UserInfoRequest {}
+
+message UserInfoResponse {
+  // The user ID ("sub" claim).
+  string subject = 1;
+  string email = 2;
+  bool email_verified = 3;
+  string name = 4;
+}

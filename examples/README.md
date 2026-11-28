@@ -11,7 +11,7 @@ to do in its own language is call a few REST endpoints and verify an RS256 JWT.
 |---|---|---|
 | [`golang/standard-library`](golang/standard-library) | Go `net/http` + `guard` package | 9001 |
 | [`golang/gin`](golang/gin) | Go + Gin + `keyoragin` adapter | 9002 |
-| [`golang/pkce`](golang/pkce) | Go web app: browser sign-in with the authorization code flow and PKCE | 9010 |
+| [`golang/pkce`](golang/pkce) | Go client: authorization code flow with PKCE, as a public app | – |
 | [`typescript/express`](typescript/express) | TypeScript + Express | 9003 |
 | [`typescript/node-fetch`](typescript/node-fetch) | TypeScript script, no framework | – |
 | [`python/fastapi`](python/fastapi) | Python + FastAPI | 9004 |
@@ -25,8 +25,8 @@ to do in its own language is call a few REST endpoints and verify an RS256 JWT.
 | [`ruby/sinatra`](ruby/sinatra) | Ruby + Sinatra | 9012 |
 
 All but `golang/pkce` are APIs that follow the contract below and forward a login form
-to Keyora. `golang/pkce` shows the other way to sign in: redirecting the browser to
-Keyora's own sign-in page.
+to Keyora. `golang/pkce` shows the other way to sign in, the authorization code flow
+with PKCE, as a client without a secret would run it.
 
 ## What happens where
 

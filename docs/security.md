@@ -64,7 +64,9 @@ the 2012 baseline:
 | One failure, no retries | A wrong verifier or redirect URI spends the code. Every failure answers `invalid_grant` without saying which check failed. |
 | No implicit flow | `response_type=token` is rejected; tokens never appear in a URL. |
 | Issuer in the response | The redirect carries `iss` (RFC 9207) so clients can detect mix-up attacks. |
-| Sign-in page | CSRF token bound to an `HttpOnly`, `SameSite=Strict` cookie; cannot be framed; nonce-based CSP with no inline script; never cached; shares lockout and rate limiting with the API. |
+| No page, no cookie, no redirect | Keyora serves no pages and never redirects a browser. The code is requested with a JSON call that reads and sets no cookie, so there is no ambient credential for another site to ride on, and an HTML form on another site cannot produce the request (`Content-Type` must be `application/json`). |
+| Browser origin | A browser may request a code only from an origin in the application's `allowed_origins`. |
+| Same defences as login | The authorization request shares the per-IP rate limit and the account lockout with the login API, and does not reveal whether the email or the password was wrong. |
 
 ID tokens are marked `token_use: id` and are refused as access tokens by Keyora and by
 the `guard` package; other verifiers should check that claim.
@@ -84,7 +86,7 @@ password.
 | SQL injection | Every value is a bound parameter; no user input is concatenated into SQL. `LIKE` wildcards in filters are escaped. |
 | Headers | `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, restrictive CSP, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, and HSTS when the issuer is `https`. |
 | CORS | Exact-match origin allow-list; credentials mode never enabled. Public applications are also checked server-side against their allowed origins. |
-| CSRF | The JSON API uses no cookies: tokens travel in the `Authorization` header, which browsers do not attach automatically. The sign-in page is the only place a cookie is used, and it is the CSRF token itself. |
+| CSRF | The JSON API uses no cookies: tokens travel in the `Authorization` header, which browsers do not attach automatically. Keyora sets no cookies anywhere. |
 | Error bodies | Internal errors are logged with the request ID and reported as an opaque `internal_error`. |
 | Logs | Never contain passwords, tokens or secrets — except the development mailer (below). |
 | Timeouts | Read, header, write and idle timeouts on the server; header size capped. |

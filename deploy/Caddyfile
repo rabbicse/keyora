@@ -3,6 +3,7 @@
 #   KEYORA_ISSUER=https://id.example.com
 #   KEYORA_TRUST_PROXY_HEADERS=true
 #   KEYORA_HTTP_ADDR=127.0.0.1:8080
+#   KEYORA_GRPC_ADDR=127.0.0.1:9090      # only if you use the gRPC API
 
 id.example.com {
 	# Metrics are unauthenticated: answer 404 to the outside world.
@@ -16,6 +17,14 @@ id.example.com {
 	reverse_proxy 127.0.0.1:8080 {
 		# Overwrite rather than append, so the right-most (trusted) entry
 		# is the address Caddy itself saw.
+		header_up X-Forwarded-For {remote_host}
+	}
+}
+
+# gRPC API (optional). Keyora's gRPC listener is plaintext HTTP/2 (h2c); Caddy
+# terminates TLS and forwards. Remove this block if KEYORA_GRPC_ADDR is unset.
+id.example.com:8443 {
+	reverse_proxy h2c://127.0.0.1:9090 {
 		header_up X-Forwarded-For {remote_host}
 	}
 }

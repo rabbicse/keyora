@@ -1,17 +1,21 @@
-// A browser sign-in using the OAuth 2.0 authorization code flow with PKCE.
+// The OAuth 2.0 authorization code flow with PKCE, API only.
 //
-// This application never sees the user's password: it sends the browser to
-// Keyora's sign-in page and gets back a one-time code, which it exchanges for
-// tokens. It is registered as a *public* application and holds no client
-// secret; PKCE is what stops a stolen code from being usable by anyone else.
+// This program plays the part of a public client, such as a mobile, desktop
+// or single-page app: it has no client secret, and PKCE is what stops a
+// stolen authorization code from being usable by anyone else. Keyora serves
+// no pages; the app collects the credentials in its own interface (here,
+// environment variables) and everything else is two JSON/form calls:
 //
-//	/          home page, shows who is signed in
-//	/login     starts the flow: creates the PKCE verifier and redirects to Keyora
-//	/callback  finishes it: checks state and issuer, exchanges the code
-//	/logout    revokes the session at Keyora
+//  1. POST /api/v1/oauth/authorize  request + credentials + code_challenge -> code
+//  2. POST /api/v1/oauth/token      code + code_verifier                   -> tokens
+//
+// It then verifies the access token locally, calls userinfo, refreshes,
+// shows that a replayed code and a replayed refresh token are refused, and
+// signs out.
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -19,7 +23,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
 	"net/http"
 	"net/url"
@@ -37,182 +40,199 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+// randomString returns 32 random bytes, base64url-encoded: 43 characters,
+// which is what RFC 7636 asks of a code verifier.
 func randomString() string {
 	b := make([]byte, 32)
-	rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b) // 43 characters
+	if _, err := rand.Read(b); err != nil {
+		log.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-type tokens struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int    `json:"expires_in"`
-	Error        string `json:"error"`
-	Description  string `json:"error_description"`
+type client struct {
+	keyora   string
+	clientID string
+	http     *http.Client
 }
 
-var page = template.Must(template.New("home").Parse(`<!doctype html>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PKCE example</title>
-<body style="font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem">
-<h1>Authorization code flow with PKCE</h1>
-{{if .Message}}<p><strong>{{.Message}}</strong></p>{{end}}
-{{if .Claims}}
-<p>Signed in as <strong>{{.Claims.Email}}</strong>.</p>
-<ul><li>User ID: <code>{{.Claims.Subject}}</code></li>
-<li>Roles: {{range .Claims.Roles}}<code>{{.}}</code> {{else}}none{{end}}</li>
-<li>Permissions: {{range .Claims.Permissions}}<code>{{.}}</code> {{else}}none{{end}}</li></ul>
-<form method="post" action="/logout"><button>Sign out</button></form>
-{{else}}
-<p>You are not signed in.</p><p><a href="/login">Sign in with Keyora</a></p>
-{{end}}
-</body>`))
+// authorize asks Keyora for an authorization code. The answer is the Keyora
+// envelope: {"data": {...}} on success, {"error": {"code", "message"}} otherwise.
+func (c *client) authorize(ctx context.Context, body map[string]string) (status int, data map[string]any, errCode string, err error) {
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.keyora+"/api/v1/oauth/authorize", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, "", err
+	}
+	defer res.Body.Close()
+	var env struct {
+		Data  map[string]any `json:"data"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&env); err != nil {
+		return res.StatusCode, nil, "", err
+	}
+	return res.StatusCode, env.Data, env.Error.Code, nil
+}
+
+// token posts to the token endpoint, which uses the OAuth 2.0 wire format
+// (form in, plain JSON out). A public client sends client_id and no secret.
+func (c *client) token(ctx context.Context, form url.Values) (status int, out map[string]any, err error) {
+	form.Set("client_id", c.clientID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.keyora+"/api/v1/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer res.Body.Close()
+	err = json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out, err
+}
+
+func (c *client) send(ctx context.Context, method, path, bearer string, body any) (int, map[string]any, error) {
+	var rd *bytes.Reader
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		rd = bytes.NewReader(raw)
+	} else {
+		rd = bytes.NewReader(nil)
+	}
+	req, _ := http.NewRequestWithContext(ctx, method, c.keyora+path, rd)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out, nil
+}
+
+func short(s string) string {
+	if len(s) > 16 {
+		return s[:16] + "..."
+	}
+	return s
+}
 
 func main() {
 	keyoraURL := env("KEYORA_URL", "http://localhost:8080")
-	// The URL the *browser* uses to reach Keyora; differs from KEYORA_URL only
-	// when this server reaches Keyora on an internal address.
-	publicURL := env("KEYORA_PUBLIC_URL", keyoraURL)
 	issuer := env("KEYORA_ISSUER", keyoraURL)
 	clientID := os.Getenv("KEYORA_PKCE_CLIENT_ID")
-	port := env("PORT", "9010")
-	redirectURI := env("REDIRECT_URI", "http://localhost:"+port+"/callback")
+	redirectURI := env("KEYORA_PKCE_REDIRECT_URI", "com.example.keyora-pkce:/callback")
+	email := env("DEMO_EMAIL", "ada@example.com")
+	password := env("DEMO_PASSWORD", "correct horse battery")
 	if clientID == "" {
 		log.Fatal("KEYORA_PKCE_CLIENT_ID is required (run examples/setup.sh)")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := &client{keyora: keyoraURL, clientID: clientID, http: &http.Client{Timeout: 10 * time.Second}}
 	g, err := guard.New(guard.Config{Issuer: issuer, Audience: clientID, JWKSURL: keyoraURL + "/.well-known/jwks.json"})
 	if err != nil {
 		log.Fatal(err)
 	}
-	httpClient := &http.Client{Timeout: 10 * time.Second}
 
-	setCookie := func(w http.ResponseWriter, name, value string, maxAge int) {
-		http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: maxAge, HttpOnly: true,
-			SameSite: http.SameSiteLaxMode, Secure: strings.HasPrefix(redirectURI, "https://")})
-	}
-	cookie := func(r *http.Request, name string) string {
-		if c, err := r.Cookie(name); err == nil {
-			return c.Value
-		}
-		return ""
-	}
-	// tokenRequest posts to Keyora's token endpoint. A public client sends
-	// its client_id and no secret.
-	tokenRequest := func(ctx context.Context, form url.Values) (*tokens, error) {
-		form.Set("client_id", clientID)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, keyoraURL+"/api/v1/oauth/token", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		res, err := httpClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer res.Body.Close()
-		var t tokens
-		if err := json.NewDecoder(res.Body).Decode(&t); err != nil {
-			return nil, err
-		}
-		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("%s: %s", t.Error, t.Description)
-		}
-		return &t, nil
+	// A fresh verifier and state for every sign-in. The verifier stays in this
+	// process; only its SHA-256 (the challenge) is sent with the credentials.
+	verifier, state := randomString(), randomString()
+	sum := sha256.Sum256([]byte(verifier))
+	request := map[string]string{
+		"client_id":             clientID,
+		"redirect_uri":          redirectURI,
+		"response_type":         "code",
+		"scope":                 "openid email profile",
+		"state":                 state,
+		"nonce":                 randomString(),
+		"code_challenge":        base64.RawURLEncoding.EncodeToString(sum[:]),
+		"code_challenge_method": "S256",
 	}
 
-	mux := http.NewServeMux()
+	// 1. Wrong password: an error code the app can show, nothing else.
+	wrong := map[string]string{"email": email, "password": password + "-wrong"}
+	for k, v := range request {
+		wrong[k] = v
+	}
+	status, _, code, err := c.authorize(ctx, wrong)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("1. authorize, wrong password   -> %d %s\n", status, code)
 
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		data := map[string]any{"Message": r.URL.Query().Get("message")}
-		if access := cookie(r, "access_token"); access != "" {
-			claims, err := g.Verify(r.Context(), access)
-			if err != nil && cookie(r, "refresh_token") != "" {
-				// Access token expired: use the refresh token once, store the rotated pair.
-				if t, rerr := tokenRequest(r.Context(), url.Values{"grant_type": {"refresh_token"}, "refresh_token": {cookie(r, "refresh_token")}}); rerr == nil {
-					setCookie(w, "access_token", t.AccessToken, t.ExpiresIn)
-					setCookie(w, "refresh_token", t.RefreshToken, 30*24*3600)
-					claims, err = g.Verify(r.Context(), t.AccessToken)
-				}
-			}
-			if err == nil {
-				data["Claims"] = claims
-			}
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		page.Execute(w, data)
-	})
+	// 2. Correct credentials: a single-use code.
+	creds := map[string]string{"email": email, "password": password}
+	for k, v := range request {
+		creds[k] = v
+	}
+	status, data, code, err := c.authorize(ctx, creds)
+	if err != nil || status != http.StatusOK {
+		log.Fatalf("authorize failed: %d %s %v (register the user first; see README)", status, code, err)
+	}
+	authCode, _ := data["code"].(string)
+	// state ties the answer to this request; iss (RFC 9207) says which server answered.
+	if got, _ := data["state"].(string); subtle.ConstantTimeCompare([]byte(got), []byte(state)) != 1 {
+		log.Fatal("state mismatch")
+	}
+	if data["iss"] != issuer {
+		log.Fatalf("unexpected issuer %v", data["iss"])
+	}
+	fmt.Printf("2. authorize                   -> %d code=%s expires_in=%v\n", status, short(authCode), data["expires_in"])
 
-	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
-		// A fresh verifier and state for every attempt. Both stay in this
-		// browser (HttpOnly cookies); only the SHA-256 of the verifier travels
-		// through the redirect.
-		verifier, state := randomString(), randomString()
-		sum := sha256.Sum256([]byte(verifier))
-		setCookie(w, "pkce_verifier", verifier, 600)
-		setCookie(w, "oauth_state", state, 600)
-		q := url.Values{
-			"response_type":         {"code"},
-			"client_id":             {clientID},
-			"redirect_uri":          {redirectURI},
-			"state":                 {state},
-			"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
-			"code_challenge_method": {"S256"},
-		}
-		http.Redirect(w, r, publicURL+"/api/v1/oauth/authorize?"+q.Encode(), http.StatusFound)
-	})
+	// 3. Exchange the code, proving with the verifier that we started the flow.
+	exchange := url.Values{"grant_type": {"authorization_code"}, "code": {authCode},
+		"redirect_uri": {redirectURI}, "code_verifier": {verifier}}
+	status, tok, err := c.token(ctx, exchange)
+	if err != nil || status != http.StatusOK {
+		log.Fatalf("code exchange failed: %d %v %v", status, tok, err)
+	}
+	access, _ := tok["access_token"].(string)
+	refresh, _ := tok["refresh_token"].(string)
+	_, hasID := tok["id_token"]
+	fmt.Printf("3. token (authorization_code)  -> %d access_token=%s refresh_token=%s id_token=%v\n",
+		status, short(access), short(refresh), hasID)
 
-	mux.HandleFunc("GET /callback", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		verifier, state := cookie(r, "pkce_verifier"), cookie(r, "oauth_state")
-		setCookie(w, "pkce_verifier", "", -1)
-		setCookie(w, "oauth_state", "", -1)
-		fail := func(msg string) { http.Redirect(w, r, "/?message="+url.QueryEscape(msg), http.StatusSeeOther) }
-		switch {
-		// state ties the response to the request this browser started (CSRF).
-		case state == "" || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1:
-			fail("Sign-in failed: state mismatch.")
-			return
-		// iss (RFC 9207) proves which authorization server answered.
-		case q.Get("iss") != issuer:
-			fail("Sign-in failed: unexpected issuer.")
-			return
-		case q.Get("error") != "":
-			fail("Sign-in failed: " + q.Get("error") + ".")
-			return
-		}
-		t, err := tokenRequest(r.Context(), url.Values{
-			"grant_type":    {"authorization_code"},
-			"code":          {q.Get("code")},
-			"redirect_uri":  {redirectURI},
-			"code_verifier": {verifier}, // proves we are the party that started the flow
-		})
-		if err != nil {
-			log.Printf("code exchange failed: %v", err)
-			fail("Sign-in failed: the code could not be exchanged.")
-			return
-		}
-		if _, err := g.Verify(r.Context(), t.AccessToken); err != nil {
-			fail("Sign-in failed: the token did not verify.")
-			return
-		}
-		// Tokens are kept in HttpOnly cookies so page JavaScript cannot read them.
-		setCookie(w, "access_token", t.AccessToken, t.ExpiresIn)
-		setCookie(w, "refresh_token", t.RefreshToken, 30*24*3600)
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
+	// 4. The same code again: refused, and Keyora revokes the session it opened.
+	//    (So this demo signs in once more afterwards.)
+	status, replay, _ := c.token(ctx, exchange)
+	fmt.Printf("4. token, same code again      -> %d %v\n", status, replay["error"])
 
-	mux.HandleFunc("POST /logout", func(w http.ResponseWriter, r *http.Request) {
-		// Lax cookies are not sent on cross-site POSTs, so this cannot be triggered from another site.
-		if refresh := cookie(r, "refresh_token"); refresh != "" {
-			body, _ := json.Marshal(map[string]string{"client_id": clientID, "refresh_token": refresh})
-			req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, keyoraURL+"/api/v1/auth/logout", strings.NewReader(string(body)))
-			req.Header.Set("Content-Type", "application/json")
-			if res, err := httpClient.Do(req); err == nil {
-				res.Body.Close()
-			}
-		}
-		setCookie(w, "access_token", "", -1)
-		setCookie(w, "refresh_token", "", -1)
-		http.Redirect(w, r, "/?message="+url.QueryEscape("Signed out."), http.StatusSeeOther)
-	})
+	status, data, _, _ = c.authorize(ctx, creds)
+	authCode, _ = data["code"].(string)
+	exchange.Set("code", authCode)
+	_, tok, _ = c.token(ctx, exchange)
+	access, _ = tok["access_token"].(string)
+	refresh, _ = tok["refresh_token"].(string)
 
-	log.Printf("PKCE example on http://localhost:%s (Keyora at %s, client %s)", port, keyoraURL, clientID)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	// 5. Verify the access token locally: signature, exp, iss, aud, token_use.
+	claims, err := g.Verify(ctx, access)
+	if err != nil {
+		log.Fatalf("access token did not verify: %v", err)
+	}
+	fmt.Printf("5. verify locally              -> sub=%s email=%s\n", short(claims.Subject), claims.Email)
+
+	// 6. userinfo with the access token.
+	status, info, _ := c.send(ctx, http.MethodGet, "/api/v1/oauth/userinfo", access, nil)
+	fmt.Printf("6. userinfo                    -> %d email=%v\n", status, info["email"])
+
+	// 7. Refresh: the old refresh token stops working; store the new pair.
+	status, next, _ := c.token(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}})
+	fmt.Printf("7. token (refresh_token)       -> %d new refresh_token=%v\n", status, next["refresh_token"] != refresh)
+	status, reused, _ := c.token(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}})
+	fmt.Printf("8. token, old refresh token    -> %d %v\n", status, reused["error"])
+
+	// 9. Sign out with the refresh token from step 7.
+	status, _, _ = c.send(ctx, http.MethodPost, "/api/v1/auth/logout", "",
+		map[string]string{"client_id": clientID, "refresh_token": fmt.Sprint(next["refresh_token"])})
+	fmt.Printf("9. logout                      -> %d\n", status)
 }

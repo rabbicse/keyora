@@ -16,10 +16,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/rabbicse/keyora/api"
+	"github.com/rabbicse/keyora/internal/access"
 	"github.com/rabbicse/keyora/internal/config"
 	"github.com/rabbicse/keyora/internal/httpapi"
 	"github.com/rabbicse/keyora/internal/mailer"
@@ -53,9 +55,36 @@ Commands:
 Configuration is read from KEYORA_* environment variables; see .env.example.
 `
 
+// Deps is what an Extension is given to work with.
+type Deps struct {
+	Service *service.Service
+	// Gate identifies callers exactly as the REST API does.
+	Gate    *access.Gate
+	Config  *config.Config
+	Log     *slog.Logger
+	Version string
+}
+
+// Extension links one more transport into a Keyora binary. The core module
+// speaks REST with the standard library alone; transports that need
+// third-party code (GraphQL, gRPC) live in modules of their own and are
+// handed to Main by the binary that wants them.
+type Extension struct {
+	// Name appears in logs ("graphql", "grpc").
+	Name string
+	// HTTP returns handlers to mount on the HTTP listener, keyed by ServeMux
+	// pattern ("POST /graphql"). They run behind the REST API's middleware.
+	// A nil map means the extension is switched off by configuration.
+	HTTP func(Deps) (map[string]http.Handler, error)
+	// Serve runs a listener of the extension's own until ctx is cancelled,
+	// then shuts down gracefully. It returns nil at once when the extension
+	// is switched off by configuration.
+	Serve func(ctx context.Context, d Deps) error
+}
+
 // Main is the entry point shared by every Keyora binary. It returns the
 // process exit code.
-func Main(args []string, version string, stdout, stderr io.Writer) int {
+func Main(args []string, version string, stdout, stderr io.Writer, exts ...Extension) int {
 	cmd := "serve"
 	if len(args) > 0 {
 		cmd, args = args[0], args[1:]
@@ -102,7 +131,7 @@ func Main(args []string, version string, stdout, stderr io.Writer) int {
 		st.Close()
 		return 0
 	}
-	if err := Run(ctx, cfg, version, log); err != nil {
+	if err := Run(ctx, cfg, version, log, exts...); err != nil {
 		log.Error("server stopped with error", "error", err)
 		return 1
 	}
@@ -209,7 +238,7 @@ func openStore(ctx context.Context, cfg *config.Config, log *slog.Logger, forceM
 }
 
 // Run starts the server and blocks until ctx is cancelled, then shuts down gracefully.
-func Run(ctx context.Context, cfg *config.Config, version string, log *slog.Logger) error {
+func Run(ctx context.Context, cfg *config.Config, version string, log *slog.Logger, exts ...Extension) error {
 	st, err := openStore(ctx, cfg, log, false)
 	if err != nil {
 		return err
@@ -258,6 +287,29 @@ func Run(ctx context.Context, cfg *config.Config, version string, log *slog.Logg
 		LegacyClientID: legacyClient,
 	}, log)
 
+	// Extensions stop when the HTTP server does, whichever fails first.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	deps := Deps{Service: svc, Gate: handler.Gate(), Config: cfg, Log: log, Version: version}
+	linked := map[string]bool{}
+	for _, ext := range exts {
+		linked[ext.Name] = true
+		if ext.HTTP == nil {
+			continue
+		}
+		routes, err := ext.HTTP(deps)
+		if err != nil {
+			return fmt.Errorf("%s: %w", ext.Name, err)
+		}
+		for pattern, h := range routes {
+			handler.Mount(pattern, h)
+			log.Info("transport mounted", "transport", ext.Name, "route", pattern)
+		}
+	}
+	if cfg.GRPCAddr != "" && !linked["grpc"] {
+		log.Warn("KEYORA_GRPC_ADDR is set but this binary was built without the gRPC transport")
+	}
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: handler,
 		ReadTimeout: cfg.ReadTimeout, ReadHeaderTimeout: 5 * time.Second,
@@ -275,22 +327,42 @@ func Run(ctx context.Context, cfg *config.Config, version string, log *slog.Logg
 	go func() { errc <- srv.Serve(ln) }()
 	log.Info("keyora is listening", "addr", ln.Addr().String(), "issuer", cfg.Issuer, "db", cfg.DBDriver, "version", version)
 
+	var extWG sync.WaitGroup
+	extErr := make(chan error, len(exts))
+	for _, ext := range exts {
+		if ext.Serve == nil {
+			continue
+		}
+		extWG.Add(1)
+		go func() {
+			defer extWG.Done()
+			if err := ext.Serve(ctx, deps); err != nil {
+				extErr <- fmt.Errorf("%s: %w", ext.Name, err)
+			}
+		}()
+	}
+
+	var failure error
 	select {
 	case err := <-errc:
 		return err
+	case failure = <-extErr:
+		log.Error("a transport failed; shutting down", "error", failure)
 	case <-ctx.Done():
 	}
 	log.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
+	cancel()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancelShutdown()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 	if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	extWG.Wait()
 	log.Info("stopped")
-	return nil
+	return failure
 }
 
 func purgeLoop(ctx context.Context, svc *service.Service, log *slog.Logger) {

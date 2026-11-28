@@ -7,6 +7,54 @@ breaking changes; they are marked **Breaking**.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: Keyora is API only.** The hosted sign-in page is gone: Keyora serves no
+  HTML, sets no cookies and never redirects a browser. `GET /api/v1/oauth/authorize`
+  is removed (it answers `405`). `POST /api/v1/oauth/authorize` now takes a JSON body —
+  the authorization request with its PKCE challenge plus the user's email and
+  password — and returns the authorization code as JSON (`code`, `state`,
+  `redirect_uri`, `redirect_to`, `expires_in`, `iss`). Codes are redeemed at the token
+  endpoint exactly as before. Applications collect credentials in their own interface.
+  OAuth client libraries that start the flow with a browser redirect no longer work
+  against Keyora; the token, discovery and JWKS endpoints are unchanged.
+- The `golang/pkce` example is now a command-line public client that runs the flow
+  through the API, instead of a web app with a sign-in page.
+
+### Added
+
+- **GraphQL API** at `POST /graphql` (module `transport/graphql`): the same accounts,
+  tenants, applications, users, roles, sessions, audit and OAuth token operations as
+  REST, with the same credentials and the same error codes in `extensions.code`.
+  `KEYORA_GRAPHQL_ENABLED` (default `true`) and `KEYORA_GRAPHQL_INTROSPECTION`
+  (default `true`). See [docs/graphql.md](docs/graphql.md).
+- **gRPC API** (module `transport/grpc`): 48 RPCs in nine services generated from
+  `keyora.proto`, plus the standard health service and optional reflection. Errors
+  carry the REST error code as `ErrorInfo.reason`. Off unless `KEYORA_GRPC_ADDR` is set
+  (`:9090` in the container image); `KEYORA_GRPC_REFLECTION` (default `true`). See
+  [docs/grpc.md](docs/grpc.md).
+- The container image, Compose files, nginx and Caddy examples expose and proxy gRPC on
+  port 9090. CI tests both transport modules.
+- `internal/access`: one place that decides who is calling (bearer token or admin key,
+  application credentials, tenant boundary, credential rate limit), used by every
+  transport.
+- An end-to-end test that boots the server with all three transports and uses one
+  token across REST, GraphQL and gRPC.
+
+### Fixed
+
+- With `KEYORA_TRUSTED_PROXIES`, a request carrying several `X-Forwarded-For` header
+  lines had its client address taken from the first line; it is now taken from the
+  last line, the one the trusted proxy appended.
+- A change to an application's allowed origins took up to 30 seconds to reach CORS
+  checks; it now applies to the next request on the instance that made the change
+  (other instances still pick it up within 30 seconds).
+- The token endpoint reports every unusable code or refresh token as `invalid_grant`,
+  in REST, GraphQL and gRPC alike.
+
+- The Spring Boot example said Keyora serves no OpenID Connect discovery document; it
+  does. The example still configures the JWKS URL directly, now with the actual reason.
+
 ## [0.1.0] - 2026-11-24
 
 First version of Keyora, developed from the

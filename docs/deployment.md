@@ -56,12 +56,13 @@ WantedBy=multi-user.target
 
 ```sh
 docker build -t keyora:0.1.0 --build-arg VERSION=0.1.0 .
-docker run -d --name keyora -p 8080:8080 -v keyora-data:/data \
+docker run -d --name keyora -p 8080:8080 -p 9090:9090 -v keyora-data:/data \
   -e KEYORA_ADMIN_KEY="$KEYORA_ADMIN_KEY" -e KEYORA_ISSUER=https://id.example.com keyora:0.1.0
 ```
 
 The image is distroless, runs as a non-root user, keeps all state under `/data`, and
-has a health check. Compose files: [`docker-compose.yml`](../docker-compose.yml)
+has a health check. It serves REST and GraphQL on port 8080 and gRPC on port 9090; drop
+`-p 9090:9090`, or set `KEYORA_GRPC_ADDR=` to an empty value, if you do not use gRPC. Compose files: [`docker-compose.yml`](../docker-compose.yml)
 (PostgreSQL) and [`deploy/docker-compose.sqlite.yml`](../deploy/docker-compose.sqlite.yml).
 
 ### Kubernetes probes
@@ -86,6 +87,13 @@ Keyora speaks plain HTTP and expects a proxy to terminate TLS. Examples:
    proxy merely appends to a client-supplied header behind another hop, rate limiting
    and audit IPs can be wrong.
 4. Block `/metrics` from the internet.
+
+The GraphQL API is on the same listener (`POST /graphql`), so the proxy rules above
+cover it. The gRPC API has a listener of its own (`KEYORA_GRPC_ADDR`), also plaintext:
+bind it to localhost or a private network and let the proxy terminate TLS and forward
+HTTP/2 to it. Both example files contain a block for that. The proxy must overwrite
+`x-forwarded-for` for gRPC as well. Leave `KEYORA_GRPC_ADDR` empty if you do not use
+gRPC.
 
 ## Several instances
 

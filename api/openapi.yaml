@@ -419,109 +419,66 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/oauth/authorize:
-    get:
-      tags: [OAuth 2.0]
-      operationId: authorize
-      summary: Authorization endpoint (hosted sign-in page)
-      description: |
-        Starts the OAuth 2.0 authorization code flow (RFC 6749 section 4.1). Send the
-        user's **browser** here; Keyora shows its sign-in page and, after a successful
-        sign-in, redirects to `redirect_uri` with `code`, `state` and `iss` (RFC 9207).
-
-        PKCE (RFC 7636) is mandatory for every application and only `S256` is accepted.
-
-        If `client_id` is unknown or `redirect_uri` is not registered exactly, Keyora
-        shows an error page and does **not** redirect. Other problems are reported to the
-        application as `error` and `error_description` on the redirect.
-      security: []
-      parameters:
-        - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
-        - { name: client_id, in: query, required: true, schema: { type: string } }
-        - name: redirect_uri
-          in: query
-          required: true
-          description: Must equal one of the application's registered `redirect_uris`, character for character.
-          schema: { type: string }
-        - name: code_challenge
-          in: query
-          required: true
-          description: "`BASE64URL(SHA256(code_verifier))`, 43 characters."
-          schema: { type: string }
-        - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
-        - name: state
-          in: query
-          description: Opaque value returned unchanged. Use it to bind the response to the browser session.
-          schema: { type: string, maxLength: 512 }
-        - name: scope
-          in: query
-          description: |
-            `openid` adds an ID token to the token response; `email` and `profile` add
-            those claims to it. Other values are echoed. API access is governed by roles
-            and permissions, not scopes.
-          schema: { type: string, maxLength: 512 }
-        - name: nonce
-          in: query
-          description: OpenID Connect nonce, returned in the ID token.
-          schema: { type: string, maxLength: 512 }
-      responses:
-        "200":
-          description: Sign-in page
-          content:
-            text/html: { schema: { type: string } }
-        "303":
-          description: Redirect to `redirect_uri` with an `error` parameter (invalid request).
-        "400":
-          description: Unknown client or unregistered redirect URI. An error page; no redirect.
-          content:
-            text/html: { schema: { type: string } }
-        "429": { $ref: "#/components/responses/RateLimited" }
     post:
       tags: [OAuth 2.0]
-      operationId: authorizeSubmit
-      summary: Sign-in form submission
+      operationId: authorize
+      summary: Request an authorization code
       description: |
-        Posted by Keyora's own sign-in page; applications do not call this. Carries the
-        authorization request, the user's credentials and a CSRF token matched against a
-        cookie set by the page.
+        Called by the application (server, web, mobile or desktop): the
+        authorization request and the user's credentials go in as JSON, the single-use
+        authorization code comes back as JSON. Exchange the code at the token endpoint
+        together with the `code_verifier`.
+
+        Keyora is API only: this endpoint never renders a page or redirects. No cookie
+        is read or set. A browser may only call from an origin listed in the
+        application's `allowed_origins`. The endpoint shares the account lockout and the
+        rate limit with `POST /api/v1/auth/login`.
+
+        `redirect_uri` must still be registered on the application: the code is bound to
+        it and the token request must repeat it. `redirect_to` in the answer is
+        `redirect_uri` with `code`, `state` and `iss` (RFC 9207) appended, for
+        applications that hand the code to a separate callback.
       security: []
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
               type: object
-              required: [csrf_token, response_type, client_id, redirect_uri, code_challenge, code_challenge_method, email, password]
+              required: [client_id, redirect_uri, code_challenge, code_challenge_method, email, password]
               properties:
-                csrf_token: { type: string }
-                response_type: { type: string, enum: [code] }
                 client_id: { type: string }
-                redirect_uri: { type: string }
-                state: { type: string }
-                scope: { type: string }
-                nonce: { type: string }
-                code_challenge: { type: string }
+                redirect_uri:
+                  type: string
+                  description: Must equal one of the application's registered `redirect_uris`, character for character.
+                response_type: { type: string, enum: [code], description: Optional; `code` is the only value. }
+                state: { type: string, maxLength: 512 }
+                scope: { type: string, maxLength: 512 }
+                nonce: { type: string, maxLength: 512 }
+                code_challenge: { type: string, description: "`BASE64URL(SHA256(code_verifier))`, 43 characters." }
                 code_challenge_method: { type: string, enum: [S256] }
                 email: { type: string, format: email }
                 password: { type: string, format: password }
       responses:
-        "303":
-          description: Signed in. Redirect to `redirect_uri` with `code`, `state` and `iss`.
+        "200":
+          description: Authorization code
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Authorization" }
+                  meta: { $ref: "#/components/schemas/Meta" }
         "400":
-          description: Unknown client or unregistered redirect URI. An error page; no redirect.
+          description: |
+            `invalid_client`, `invalid_redirect_uri`, `invalid_request` (PKCE missing or
+            malformed), `unsupported_response_type`, or a malformed body.
           content:
-            text/html: { schema: { type: string } }
-        "401":
-          description: Wrong credentials. The sign-in page again, with a message.
-          content:
-            text/html: { schema: { type: string } }
-        "403":
-          description: Missing or stale CSRF token, or the account may not sign in. The sign-in page again.
-          content:
-            text/html: { schema: { type: string } }
-        "423":
-          description: Account locked. The sign-in page again.
-          content:
-            text/html: { schema: { type: string } }
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "423": { $ref: "#/components/responses/Locked" }
         "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/oauth/token:
     post:
@@ -1560,6 +1517,19 @@ components:
         refresh_token: { type: string, description: Opaque and single use., example: kyr_... }
         refresh_expires_in: { type: integer, description: Seconds until the session expires if unused. }
         session_id: { type: string, format: uuid }
+    Authorization:
+      type: object
+      description: The authorization response of the authorization code flow.
+      properties:
+        code: { type: string, description: Single use; valid for `expires_in` seconds., example: kyc_... }
+        state: { type: string, description: "The `state` of the request, unchanged." }
+        redirect_uri: { type: string, format: uri, description: The registered redirect URI the code is bound to. }
+        redirect_to:
+          type: string
+          format: uri
+          description: "`redirect_uri` with `code`, `state` and `iss` appended."
+        expires_in: { type: integer, example: 60 }
+        iss: { type: string, format: uri, description: Keyora's issuer (RFC 9207). }
     AccessTokenClaims:
       type: object
       description: Payload of the access token JWT (documentation only; not an API response).

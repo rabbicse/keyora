@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rabbicse/keyora/internal/access"
 	"github.com/rabbicse/keyora/internal/domain"
 	"github.com/rabbicse/keyora/internal/ratelimit"
-	"github.com/rabbicse/keyora/internal/security"
 	"github.com/rabbicse/keyora/internal/service"
 )
 
@@ -31,15 +31,34 @@ type Config struct {
 }
 
 type API struct {
-	svc          *service.Service
-	cfg          Config
-	log          *slog.Logger
-	mux          *http.ServeMux
-	metrics      *metrics
-	adminKeyHash string
-	origins      originCache
-	patterns     []string
+	svc      *service.Service
+	gate     *access.Gate
+	cfg      Config
+	log      *slog.Logger
+	mux      *http.ServeMux
+	metrics  *metrics
+	origins  originCache
+	patterns []string
 }
+
+// Gate is the caller identification shared with the other transports.
+func (a *API) Gate() *access.Gate { return a.gate }
+
+// Mount serves h for a ServeMux pattern ("POST /graphql") behind the same
+// middleware as the REST routes: request ID, security headers, CORS, panic
+// recovery, metrics and access logging. It must be called before the server
+// starts. Handlers that take credentials call Gate().Throttle themselves.
+func (a *API) Mount(pattern string, h http.Handler) {
+	a.patterns = append(a.patterns, pattern)
+	a.mux.Handle(pattern, h)
+}
+
+// RequestMeta describes the caller of a request that came through the API's
+// middleware: resolved client address, user agent and request ID.
+func RequestMeta(r *http.Request) service.Meta { return metaFrom(r) }
+
+// BearerToken extracts the bearer credential of a request, or "".
+func BearerToken(r *http.Request) string { return bearer(r) }
 
 // Routes lists every registered "METHOD /path" pattern.
 func (a *API) Routes() []string { return append([]string{}, a.patterns...) }
@@ -47,10 +66,7 @@ func (a *API) Routes() []string { return append([]string{}, a.patterns...) }
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
 
 func New(svc *service.Service, cfg Config, log *slog.Logger) *API {
-	a := &API{svc: svc, cfg: cfg, log: log, mux: http.NewServeMux(), metrics: newMetrics()}
-	if cfg.AdminKey != "" {
-		a.adminKeyHash = security.HashToken(cfg.AdminKey)
-	}
+	a := &API{svc: svc, gate: access.New(svc, cfg.AdminKey, cfg.Limiter), cfg: cfg, log: log, mux: http.NewServeMux(), metrics: newMetrics()}
 	a.origins.static = map[string]bool{}
 	for _, o := range cfg.CORSAllowedOrigins {
 		a.origins.static[o] = true
@@ -89,8 +105,7 @@ func (a *API) routes() {
 	a.handle("POST /api/v1/auth/email-verification/confirm", a.confirmEmail)
 	a.handle("POST /api/v1/auth/password/forgot", a.forgotPassword)
 	a.handle("POST /api/v1/auth/password/reset", a.resetPassword)
-	a.handle("GET /api/v1/oauth/authorize", a.authorizePage)
-	a.handle("POST /api/v1/oauth/authorize", a.authorizeSubmit)
+	a.handle("POST /api/v1/oauth/authorize", a.authorize)
 	a.handle("POST /api/v1/oauth/token", a.oauthToken)
 	a.handle("GET /api/v1/oauth/userinfo", a.userinfo)
 	a.handle("GET /.well-known/oauth-authorization-server", a.oauthMetadata)
@@ -191,58 +206,23 @@ func bearer(r *http.Request) string {
 
 // principal authenticates the caller of a self-service or management endpoint.
 func (a *API) principal(r *http.Request) (*service.Principal, service.Meta, error) {
-	m := metaFrom(r)
-	token := bearer(r)
-	if token == "" {
-		return nil, m, domain.ErrUnauthenticated
-	}
-	if a.adminKeyHash != "" && security.ConstantTimeEqual(security.HashToken(token), a.adminKeyHash) {
-		m.ActorType, m.ActorID = "root", "admin-key"
-		return &service.Principal{Root: true}, m, nil
-	}
-	p, err := a.svc.Authenticate(r.Context(), token)
-	if err != nil {
-		return nil, m, err
-	}
-	m.ActorType, m.ActorID = "user", p.UserID
-	return p, m, nil
+	return a.gate.Principal(r.Context(), bearer(r), metaFrom(r))
 }
 
 // user requires an end-user access token (the root key has no user identity).
 func (a *API) user(r *http.Request) (*service.Principal, service.Meta, error) {
-	p, m, err := a.principal(r)
-	if err != nil {
-		return nil, m, err
-	}
-	if p.Root {
-		return nil, m, domain.E(domain.KindForbidden, "forbidden", "this endpoint requires a user access token")
-	}
-	return p, m, nil
+	return a.gate.User(r.Context(), bearer(r), metaFrom(r))
 }
 
 func (a *API) root(r *http.Request) (service.Meta, error) {
-	p, m, err := a.principal(r)
-	if err != nil {
-		return m, err
-	}
-	if !p.Root {
-		return m, domain.ErrForbidden
-	}
-	return m, nil
+	return a.gate.Root(r.Context(), bearer(r), metaFrom(r))
 }
 
-// tenantAdmin authorises management of the tenant named in the path. This one
-// check is the cross-tenant boundary for the entire management API.
+// tenantAdmin authorises management of the tenant named in the path.
 func (a *API) tenantAdmin(r *http.Request) (string, service.Meta, error) {
-	p, m, err := a.principal(r)
-	if err != nil {
-		return "", m, err
-	}
 	tenantID := r.PathValue("tenant_id")
-	if !p.CanManage(tenantID) {
-		return "", m, domain.ErrForbidden
-	}
-	return tenantID, m, nil
+	m, err := a.gate.TenantAdmin(r.Context(), bearer(r), tenantID, metaFrom(r))
+	return tenantID, m, err
 }
 
 // client authenticates the calling application from HTTP Basic credentials
@@ -252,5 +232,5 @@ func (a *API) client(r *http.Request, bodyID, bodySecret string, requireConfiden
 	if u, p, ok := r.BasicAuth(); ok {
 		id, secret = u, p
 	}
-	return a.svc.AuthenticateClient(r.Context(), id, secret, r.Header.Get("Origin"), requireConfidential)
+	return a.gate.Client(r.Context(), id, secret, r.Header.Get("Origin"), requireConfidential)
 }

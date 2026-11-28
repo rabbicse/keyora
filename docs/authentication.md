@@ -14,12 +14,16 @@ Both lifetimes are configurable globally and per application.
 
 ## Two ways to sign a user in
 
+Keyora is API only. It serves no pages, sets no cookies and never redirects a browser:
+every user interface belongs to your application, and Keyora is the API behind it.
+
 | | Direct login | Authorization code flow with PKCE |
 |---|---|---|
-| Who collects the password | Your application, which forwards it to Keyora | Keyora's own sign-in page |
-| Endpoint | `POST /api/v1/auth/login` | `GET /api/v1/oauth/authorize`, then `POST /api/v1/oauth/token` |
-| Best for | A first-party backend with its own login form | Browser and mobile apps, and anything that should never see a password |
+| Who collects the credentials | Your application | Your application |
+| Calls | `POST /api/v1/auth/login` | `POST /api/v1/oauth/authorize`, then `POST /api/v1/oauth/token` |
+| Best for | A backend that holds a client secret | Single-page, mobile and desktop apps, which cannot keep a secret; anything that needs an ID token |
 | Needs a client secret | Yes, for confidential applications | No. PKCE protects public clients. |
+| ID token (OpenID Connect) | No | Yes, with the `openid` scope |
 
 Both end the same way: a session, an access token and a rotating refresh token.
 
@@ -204,30 +208,42 @@ The lockout trade-off is discussed in [security.md](security.md#known-trade-offs
 
 ```mermaid
 sequenceDiagram
-    participant A as Your app (browser or mobile)
-    participant B as User's browser
+    participant U as User
+    participant A as Your app
     participant K as Keyora
     A->>A: verifier = 32 random bytes<br/>challenge = BASE64URL(SHA256(verifier))
-    A->>B: redirect to /api/v1/oauth/authorize<br/>client_id, redirect_uri, state, challenge, S256
-    B->>K: GET authorize
-    K-->>B: sign-in page
-    B->>K: email + password
-    K->>K: verify · open session · store hash of code with the challenge
-    K-->>B: 303 redirect_uri?code=…&state=…&iss=…
-    B->>A: code, state, iss
+    U->>A: email + password
+    A->>K: POST /api/v1/oauth/authorize (JSON)<br/>client_id, redirect_uri, state, challenge, S256, email, password
+    K->>K: check application and redirect URI · rate limit · verify credentials<br/>open session · store hash of code with the challenge
+    K-->>A: code, state, redirect_to, iss
     A->>A: check state and iss
     A->>K: POST /api/v1/oauth/token<br/>code, redirect_uri, code_verifier
     K->>K: consume code once · SHA256(verifier) == challenge?
-    K-->>A: access_token, refresh_token
+    K-->>A: access_token, refresh_token (and id_token)
 ```
 
 1. **Register the redirect URI** on the application (`redirect_uris`). It is matched
-   exactly.
+   exactly. A single-page app also registers its origin in `allowed_origins`; Keyora
+   refuses the call from any other browser origin.
 2. **Create a verifier** — 43 to 128 characters of `A-Z a-z 0-9 - . _ ~`; 32 random
    bytes, base64url-encoded, is right. Keep it where only your app can read it. Send
    only its SHA-256 (`code_challenge`) with `code_challenge_method=S256`.
-3. **Send a random `state`** and check it when the browser comes back. Also check that
-   `iss` equals your Keyora issuer.
+3. **Request the code** with the user's credentials and a random `state`:
+
+   ```sh
+   curl -X POST http://localhost:8080/api/v1/oauth/authorize -H 'Content-Type: application/json' -d '{
+     "client_id": "'$CLIENT_ID'", "redirect_uri": "com.example.app:/callback",
+     "state": "af0ifjsldkj", "code_challenge": "'$CHALLENGE'", "code_challenge_method": "S256",
+     "email": "ada@example.com", "password": "correct horse battery"}'
+   # {"data":{"code":"kyc_lcP7…","state":"af0ifjsldkj","redirect_uri":"com.example.app:/callback",
+   #   "redirect_to":"com.example.app:/callback?code=kyc_lcP7…&iss=http%3A%2F%2Flocalhost%3A8080&state=af0ifjsldkj",
+   #   "expires_in":60,"iss":"http://localhost:8080"},"meta":{"request_id":"bf773118-…"}}
+   ```
+
+   Check that `state` is the one you sent and that `iss` equals your Keyora issuer.
+   Failures use the normal error envelope: `401 invalid_credentials`,
+   `423 account_locked`, `400 invalid_request` when PKCE is missing or malformed,
+   `400 invalid_client` or `invalid_redirect_uri`, `403 origin_not_allowed`.
 4. **Exchange the code** within 60 seconds, sending the verifier:
 
    ```sh
@@ -240,13 +256,21 @@ sequenceDiagram
    Confidential applications also authenticate (HTTP Basic or `client_secret`).
 5. **Refresh** with `grant_type=refresh_token` on the same endpoint.
 
-Why PKCE: the code travels through the browser, where another app or a log could
-capture it. Without the verifier — which never leaves your app — a captured code is
-worthless. Keyora requires PKCE for every application, accepts only `S256`, lets a code
-be used once, and revokes the session if a code is presented twice.
+`redirect_uri` is never visited — Keyora redirects nowhere — but it must be registered:
+the code is bound to it and the token request must repeat it. `redirect_to` in the
+answer is the redirect URI with `code`, `state` and `iss` appended, for an application
+that hands the code to a separate component; most ignore it and read `code`.
 
-Client libraries can find the endpoints at
-`GET /.well-known/oauth-authorization-server` (RFC 8414).
+Why PKCE: between the two calls the code may be logged or intercepted. Without the
+verifier — which never leaves your app — a captured code is worthless. Keyora requires
+PKCE for every application, accepts only `S256`, lets a code be used once, and revokes
+the session if a code is presented twice.
+
+The token endpoint and `GET /.well-known/oauth-authorization-server` (RFC 8414) /
+`GET /.well-known/openid-configuration` follow the standard wire formats, so OAuth
+libraries can redeem codes, refresh tokens and verify ID tokens. Libraries that insist
+on starting the flow with a browser redirect to the authorization endpoint will not
+work: that endpoint accepts only the JSON `POST` above.
 
 ### OpenID Connect
 
@@ -272,9 +296,9 @@ audience.
 Keyora implements the authorization code flow of OpenID Connect Core; it has not been
 through OpenID certification.
 
-What this flow does not do yet: it shows no consent screen and keeps no browser session
-at Keyora, so a second application asks for the password again. A complete client is in
-[`examples/golang/pkce`](../examples/golang/pkce).
+What this flow does not do: there is no consent step, and Keyora keeps no browser
+session (it sets no cookies at all), so a second application asks for the password
+again. A complete client is in [`examples/golang/pkce`](../examples/golang/pkce).
 
 ## Service-to-service tokens
 

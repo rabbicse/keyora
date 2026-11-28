@@ -29,7 +29,7 @@ type instance struct {
 }
 
 // start boots the real server (config -> store -> migrations -> HTTP) on a free port.
-func start(t *testing.T, dir string, env map[string]string) *instance {
+func start(t *testing.T, dir string, env map[string]string, exts ...server.Extension) *instance {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -56,7 +56,9 @@ func start(t *testing.T, dir string, env map[string]string) *instance {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	in := &instance{t: t, base: "http://" + addr, cancel: cancel, done: make(chan error, 1)}
-	go func() { in.done <- server.Run(ctx, cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil))) }()
+	go func() {
+		in.done <- server.Run(ctx, cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)), exts...)
+	}()
 	for i := 0; i < 100; i++ {
 		if res, err := http.Get(in.base + "/readyz"); err == nil {
 			res.Body.Close()

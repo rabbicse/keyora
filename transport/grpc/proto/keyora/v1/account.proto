@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package keyora.v1;
+
+import "keyora/v1/types.proto";
+
+option go_package = "github.com/rabbicse/keyora/transport/grpc/keyorapb;keyorapb";
+
+// AccountService is what a signed-in user can do with their own account. It
+// is the gRPC form of the REST routes under /api/v1/users/me.
+//
+// Every RPC needs "authorization: Bearer <access token>" metadata. The root
+// admin key is refused (PERMISSION_DENIED): it has no user identity.
+service AccountService {
+  // GetMe returns the caller's profile with their current roles and
+  // permissions.
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+
+  // UpdateMe changes the caller's display name. Nothing else about an
+  // account can be changed by its owner through this RPC.
+  rpc UpdateMe(UpdateMeRequest) returns (UpdateMeResponse);
+
+  // ChangePassword sets a new password after checking the current one, and
+  // revokes the caller's other sessions. The session of the access token
+  // used for the call stays valid.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+
+  // ListMySessions lists the caller's active sessions, one per signed-in
+  // device.
+  rpc ListMySessions(ListMySessionsRequest) returns (ListMySessionsResponse);
+
+  // RevokeMySession signs out one of the caller's sessions. A session of
+  // another user is reported as NOT_FOUND.
+  rpc RevokeMySession(RevokeMySessionRequest) returns (RevokeMySessionResponse);
+}
+
+message GetMeRequest {}
+
+message GetMeResponse {
+  User user = 1;
+  // Names of the roles assigned to the user.
+  repeated string roles = 2;
+  // Names of the permissions those roles grant.
+  repeated string permissions = 3;
+}
+
+message UpdateMeRequest {
+  // Required. An empty string clears the name.
+  optional string name = 1;
+}
+
+message UpdateMeResponse {
+  User user = 1;
+}
+
+message ChangePasswordRequest {
+  string current_password = 1;
+  string new_password = 2;
+}
+
+message ChangePasswordResponse {}
+
+message ListMySessionsRequest {
+  // Page size, 1 to 100. 0 means the default of 20.
+  int32 limit = 1;
+  // Number of sessions to skip.
+  int32 offset = 2;
+}
+
+message ListMySessionsResponse {
+  repeated Session sessions = 1;
+  // Number of sessions in total, across all pages.
+  int64 total = 2;
+}
+
+message RevokeMySessionRequest {
+  string session_id = 1;
+}
+
+message RevokeMySessionResponse {}

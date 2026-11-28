@@ -5,10 +5,12 @@
 1. **The core depends on nothing but the Go standard library.** Every third-party
    package is confined to a separate Go module that the core never imports.
 2. **Identity logic does not know about HTTP or SQL.** It can be tested in memory and
-   served by any transport.
-3. **Tenant isolation is enforced at the lowest layer**, not by callers remembering to
+   is served by three transports — REST, GraphQL and gRPC — that share it.
+3. **API only.** Keyora serves no pages, sets no cookies and never redirects a
+   browser. Every user interface belongs to the application; Keyora is the API behind it.
+4. **Tenant isolation is enforced at the lowest layer**, not by callers remembering to
    filter.
-4. **Pragmatic over layered.** One package per concern, interfaces only where there are
+5. **Pragmatic over layered.** One package per concern, interfaces only where there are
    really two implementations.
 
 ## Repository layout
@@ -27,28 +29,35 @@ keyora/
 │   │   ├── memory/           in-memory adapter
 │   │   ├── sqlstore/         PostgreSQL (direct or via PgBouncer) and SQLite adapter + migrations
 │   │   └── storetest/        conformance suite every implementation must pass
+│   ├── access/               who is calling: shared by every transport
 │   ├── httpapi/              REST delivery: routing, middleware, envelope, metrics
 │   ├── config/               environment configuration
 │   ├── mailer/               SMTP and development mailers
 │   ├── ratelimit/            token-bucket limiter
 │   └── server/               wiring, CLI, graceful shutdown
-├── cmd/keyora/               server binary — own module, links the database drivers
+├── transport/
+│   ├── graphql/              GraphQL delivery — own module; schema.graphql is the contract
+│   └── grpc/                 gRPC delivery — own module; proto/ is the contract, keyorapb/ the generated code
+├── cmd/keyora/               server binary — own module, links the database drivers and both transports
 ├── adapters/gin/             Gin middleware — own module
 ├── examples/                 integrations in Go, TypeScript, Python, Java, .NET, PHP
 ├── deploy/                   Compose, nginx and Caddy examples
 └── docs/
 ```
 
-### Why three modules
+### Why several modules
 
 `database/sql` is in the standard library, but drivers are not, and a server that
-cannot talk to a database is not useful. Rather than give up the zero-dependency core,
-the drivers live in the module that builds the binary:
+cannot talk to a database is not useful. The same goes for GraphQL and gRPC: neither is
+in the standard library. Rather than give up the zero-dependency core, everything that
+needs third-party code lives in a module of its own:
 
 | Module | Imports | Why separate |
 |---|---|---|
 | `github.com/rabbicse/keyora` | standard library only | The library others import and audit. `make check-deps` fails the build if it ever gains a dependency. |
-| `…/keyora/cmd/keyora` | `pgx` (PostgreSQL), `modernc.org/sqlite` (pure-Go SQLite) | `sqlstore` speaks `database/sql`; this module only registers drivers. |
+| `…/keyora/transport/graphql` | a GraphQL execution library | The GraphQL API. A binary that does not want it does not link it. |
+| `…/keyora/transport/grpc` | `google.golang.org/grpc`, `protobuf` | The gRPC API. Its `keyorapb` package is also what Go clients import. |
+| `…/keyora/cmd/keyora` | `pgx` (PostgreSQL), `modernc.org/sqlite` (pure-Go SQLite), the two transports | `sqlstore` speaks `database/sql`; this module registers drivers and hands the transports to the server. |
 | `…/keyora/adapters/gin` | Gin | Only for applications that already use Gin. |
 
 The nested modules use `replace` directives to build against the repository they sit
@@ -77,11 +86,37 @@ flowchart TD
 ```
 
 - `httpapi` contains no business rules. It turns HTTP into calls on `service` and
-  `domain.Error` into status codes.
+  `domain.Error` into status codes. The GraphQL and gRPC transports do the same job for
+  their protocols.
 - `service` returns `*domain.Error` values with a stable `Code`. Anything else is
   logged and reported to the client as an opaque `internal_error`.
 - The middleware chain is a single function (`ServeHTTP`) rather than a stack of
   wrappers, so the order — which is security-relevant — is visible in one place.
+
+## Three transports, one core
+
+```mermaid
+flowchart LR
+    REST["REST<br/>internal/httpapi<br/>/api/v1/*"] --> G
+    GQL["GraphQL<br/>transport/graphql<br/>POST /graphql"] --> G
+    GRPC["gRPC<br/>transport/grpc<br/>own listener"] --> G
+    G["access.Gate<br/>bearer token or admin key → Principal<br/>application credentials · tenant boundary · credential rate limit"] --> S[service]
+```
+
+- Every operation of the versioned REST API exists in all three transports. They
+  differ only in wire format: JSON envelope, GraphQL `data`/`errors`, protobuf
+  messages with status codes.
+- **Who is calling is decided in one place.** `internal/access` holds the checks that
+  matter for security — which credential identifies whom, who may manage which tenant,
+  and the per-address limit on operations that take credentials. No transport
+  re-implements them, so they cannot drift apart.
+- **Error codes are the same everywhere.** A `domain.Error` code such as
+  `invalid_credentials` is `error.code` in REST, `extensions.code` in GraphQL and the
+  `ErrorInfo` reason in gRPC.
+- **The core does not import the other two.** `internal/server` accepts transports as
+  `server.Extension` values; `cmd/keyora` passes them in. GraphQL is mounted on the HTTP
+  listener behind the REST middleware; gRPC runs a listener of its own and is off until
+  `KEYORA_GRPC_ADDR` names an address.
 
 ## Data model
 
@@ -166,7 +201,7 @@ The pieces that planned features plug into already exist:
 
 | Planned | Hooks into |
 |---|---|
-| Single sign-on across applications | A browser session cookie checked in the authorization endpoint before showing the sign-in page |
+| Single sign-on across applications | The authorization request accepting an existing session's credential in place of a password |
 | Social / external identity providers | A second credential type next to the password on `User` |
 | MFA, passkeys | A step between password verification and `issueTokens` in `service.Login` |
 | MySQL | `sqlstore` dialects |

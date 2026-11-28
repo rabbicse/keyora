@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -29,62 +27,25 @@ func challengeFor(v string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// browser is a cookie-keeping client that does not follow redirects, like a
-// user agent whose navigation we want to inspect.
-type browser struct {
-	t *testing.T
-	h *harness
-	c *http.Client
-}
-
-func (h *harness) browser() *browser {
-	jar, _ := cookiejar.New(nil)
-	return &browser{t: h.t, h: h, c: &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
-}
-
-type page struct {
-	Status   int
-	Body     string
-	Location *url.URL
-	Header   http.Header
-}
-
-func (b *browser) finish(res *http.Response, err error) page {
-	b.t.Helper()
-	if err != nil {
-		b.t.Fatal(err)
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(res.Body)
-	p := page{Status: res.StatusCode, Body: string(raw), Header: res.Header}
-	if loc := res.Header.Get("Location"); loc != "" {
-		p.Location, _ = url.Parse(loc)
-	}
-	return p
-}
-
-func (b *browser) open(params url.Values) page {
-	return b.finish(b.c.Get(b.h.srv.URL + "/api/v1/oauth/authorize?" + params.Encode()))
-}
-
-var hiddenRe = regexp.MustCompile(`<input type="hidden" name="([^"]+)" value="([^"]*)">`)
-
-// submit fills in the sign-in form exactly as rendered and posts it.
-func (b *browser) submit(form page, email, pw string) page {
-	b.t.Helper()
-	fields := url.Values{"email": {email}, "password": {pw}}
-	for _, m := range hiddenRe.FindAllStringSubmatch(form.Body, -1) {
-		fields.Set(m[1], strings.NewReplacer("&amp;", "&", "&#34;", `"`, "&lt;", "<", "&gt;", ">", "&#39;", "'", "&#43;", "+").Replace(m[2]))
-	}
-	if fields.Get("csrf_token") == "" {
-		b.t.Fatalf("no sign-in form in page (status %d): %s", form.Status, form.Body)
-	}
-	return b.finish(b.c.PostForm(b.h.srv.URL+"/api/v1/oauth/authorize", fields))
-}
-
 func authParams(clientID string) url.Values {
 	return url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirectURI},
 		"state": {"xyz-state"}, "code_challenge": {challengeFor(verifier)}, "code_challenge_method": {"S256"}, "scope": {"profile"}}
+}
+
+// authBody is the JSON an application sends: the
+// authorization request together with the user's credentials.
+func authBody(clientID, email, pw string) M {
+	m := M{"email": email, "password": pw}
+	for k, v := range authParams(clientID) {
+		m[k] = v[0]
+	}
+	return m
+}
+
+// authorize posts body to the authorization endpoint as an application does.
+func (h *harness) authorize(body M, headers ...string) response {
+	h.t.Helper()
+	return h.do("POST", "/api/v1/oauth/authorize", "", body, headers...)
 }
 
 func (h *harness) token(form url.Values, basic string) (int, map[string]any) {
@@ -119,45 +80,46 @@ func pkceSetup(t *testing.T) (h *harness, tenantID, clientID string) {
 	return h, tenantID, spa.get(t, "client_id")
 }
 
-// signIn runs the browser half of the flow and returns the authorization code.
+// signIn obtains an authorization code for ada.
 func signIn(t *testing.T, h *harness, clientID string) string {
 	t.Helper()
-	b := h.browser()
-	done := b.submit(b.open(authParams(clientID)), "ada@example.com", password)
-	if done.Status != http.StatusSeeOther || done.Location == nil || done.Location.Query().Get("code") == "" {
-		t.Fatalf("sign-in did not redirect with a code: %d %v %s", done.Status, done.Location, done.Body)
+	code := h.expect(h.authorize(authBody(clientID, "ada@example.com", password)), 200, "").get(t, "code")
+	if code == "" {
+		t.Fatal("authorization succeeded without a code")
 	}
-	return done.Location.Query().Get("code")
+	return code
 }
 
 func TestAuthorizationCodeFlowWithPKCE(t *testing.T) {
 	h, tenantID, clientID := pkceSetup(t)
-	b := h.browser()
 
-	form := b.open(authParams(clientID))
-	if form.Status != 200 || !strings.Contains(form.Body, `name="password"`) || !strings.Contains(form.Body, "Acme &lt;SPA&gt;") {
-		t.Fatalf("sign-in page: %d %s", form.Status, form.Body)
+	az := h.expect(h.authorize(authBody(clientID, "ada@example.com", password)), 200, "")
+	var out struct {
+		Code, State, Iss        string
+		RedirectURI, RedirectTo string
+		ExpiresIn               int `json:"expires_in"`
 	}
-	csp := form.Header.Get("Content-Security-Policy")
-	if !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "frame-ancestors 'none'") || strings.Contains(csp, "unsafe-inline") ||
-		form.Header.Get("X-Frame-Options") != "DENY" || form.Header.Get("Cache-Control") != "no-store" {
-		t.Fatalf("sign-in page headers are too weak: %v", form.Header)
+	json.Unmarshal(az.Body.Data, &out)
+	out.RedirectURI, out.RedirectTo = az.get(t, "redirect_uri"), az.get(t, "redirect_to")
+	if !strings.HasPrefix(out.Code, "kyc_") || out.State != "xyz-state" || out.Iss != "https://id.test" ||
+		out.RedirectURI != redirectURI || out.ExpiresIn != 60 {
+		t.Fatalf("authorization response: %s", az.Raw)
 	}
-	if c := form.Header.Get("Set-Cookie"); !strings.Contains(c, "HttpOnly") || !strings.Contains(c, "SameSite=Strict") {
-		t.Fatalf("CSRF cookie attributes: %q", c)
+	// redirect_to is the complete RFC 6749 authorization response, ready to navigate to.
+	to, err := url.Parse(out.RedirectTo)
+	if err != nil || to.Scheme+"://"+to.Host+to.Path != redirectURI || to.Query().Get("code") != out.Code ||
+		to.Query().Get("state") != "xyz-state" || to.Query().Get("iss") != "https://id.test" {
+		t.Fatalf("redirect_to: %q", out.RedirectTo)
+	}
+	// API only: JSON only, never cached, and no cookie that could become an ambient credential.
+	if ct := az.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("content type %q", ct)
+	}
+	if az.Header.Get("Set-Cookie") != "" || az.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("authorization response headers: %v", az.Header)
 	}
 
-	done := b.submit(form, "ada@example.com", password)
-	if done.Status != http.StatusSeeOther {
-		t.Fatalf("status %d: %s", done.Status, done.Body)
-	}
-	q := done.Location.Query()
-	if done.Location.Scheme+"://"+done.Location.Host+done.Location.Path != redirectURI || q.Get("state") != "xyz-state" ||
-		q.Get("iss") != "https://id.test" || !strings.HasPrefix(q.Get("code"), "kyc_") {
-		t.Fatalf("redirect: %s", done.Location)
-	}
-
-	status, tok := h.token(exchange(clientID, q.Get("code")), "")
+	status, tok := h.token(exchange(clientID, out.Code), "")
 	if status != 200 || tok["token_type"] != "Bearer" || tok["refresh_token"] == nil || tok["scope"] != "profile" {
 		t.Fatalf("token response: %d %v", status, tok)
 	}
@@ -285,11 +247,9 @@ func TestAuthorizationCodeIsBoundToItsClient(t *testing.T) {
 	if status, body := h.token(exchange(confID, code), confID+":"+confSecret); status != 200 {
 		t.Fatalf("confidential client with secret: %d %v", status, body)
 	}
-	noPKCE := authParams(confID)
-	noPKCE.Del("code_challenge")
-	if p := h.browser().open(noPKCE); p.Status != http.StatusSeeOther || p.Location.Query().Get("error") != "invalid_request" {
-		t.Fatalf("confidential client was allowed to skip PKCE: %d %s", p.Status, p.Body)
-	}
+	noPKCE := authBody(confID, "ada@example.com", password)
+	delete(noPKCE, "code_challenge")
+	h.expect(h.authorize(noPKCE), 400, "invalid_request")
 
 	// Another tenant's application cannot redeem it either.
 	_, foreign := h.tenant("beta")
@@ -300,93 +260,113 @@ func TestAuthorizationCodeIsBoundToItsClient(t *testing.T) {
 	}
 }
 
+func TestNoBrowserInterface(t *testing.T) {
+	h, _, clientID := pkceSetup(t)
+
+	// The authorization endpoint is a JSON API: a browser navigating to it gets
+	// neither a page nor a redirect.
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err := c.Get(h.srv.URL + "/api/v1/oauth/authorize?" + authParams(clientID).Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed || res.Header.Get("Location") != "" ||
+		!strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") || !strings.Contains(string(raw), `"method_not_allowed"`) {
+		t.Fatalf("GET authorize: %d %v %s", res.StatusCode, res.Header, raw)
+	}
+
+	// No endpoint serves markup or sets a cookie, whatever the browser asks for.
+	for _, path := range []string{"/", "/login", "/signin", "/api/v1/oauth/authorize", "/api/v1/oauth/token", "/authorize", "/.well-known/openid-configuration"} {
+		req, _ := http.NewRequest("GET", h.srv.URL+path, nil)
+		req.Header.Set("Accept", "text/html")
+		res, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if strings.Contains(res.Header.Get("Content-Type"), "html") || strings.Contains(strings.ToLower(string(body)), "<html") ||
+			strings.Contains(string(body), "<form") || res.Header.Get("Set-Cookie") != "" || res.Header.Get("Location") != "" {
+			t.Errorf("%s: served a browser interface: %d %v %.80s", path, res.StatusCode, res.Header, body)
+		}
+	}
+
+	// There is no setting for a sign-in page: unknown fields are refused.
+	tenantID, _ := h.tenant("other")
+	h.expect(h.do("POST", "/api/v1/tenants/"+tenantID+"/applications", adminKey,
+		M{"name": "x", "login_url": "https://app.example.com/sign-in"}), 400, "invalid_json")
+}
+
 func TestAuthorizeRequestValidation(t *testing.T) {
 	h, _, clientID := pkceSetup(t)
-	b := h.browser()
-
-	// Untrusted redirect target: an error page on Keyora, never a redirect.
-	for name, mod := range map[string]func(url.Values){
-		"unknown client":             func(v url.Values) { v.Set("client_id", "app_nope") },
-		"missing client":             func(v url.Values) { v.Del("client_id") },
-		"unregistered redirect":      func(v url.Values) { v.Set("redirect_uri", "https://evil.example/cb") },
-		"redirect with extra path":   func(v url.Values) { v.Set("redirect_uri", redirectURI+"/../evil") },
-		"redirect with extra query":  func(v url.Values) { v.Set("redirect_uri", redirectURI+"?next=https://evil.example") },
-		"redirect differing by case": func(v url.Values) { v.Set("redirect_uri", strings.ToUpper(redirectURI)) },
-		"missing redirect":           func(v url.Values) { v.Del("redirect_uri") },
-	} {
-		v := authParams(clientID)
-		mod(v)
-		if p := b.open(v); p.Status != 400 || p.Location != nil || strings.Contains(p.Body, `name="password"`) {
-			t.Errorf("%s: got %d location=%v, want a 400 error page and no redirect", name, p.Status, p.Location)
-		}
-	}
-
-	// Trusted redirect target: errors go back to the application.
 	for name, tc := range map[string]struct {
-		mod  func(url.Values)
-		want string
+		mod    func(M)
+		status int
+		want   string
 	}{
-		"implicit flow":       {func(v url.Values) { v.Set("response_type", "token") }, "unsupported_response_type"},
-		"no response_type":    {func(v url.Values) { v.Del("response_type") }, "unsupported_response_type"},
-		"no challenge":        {func(v url.Values) { v.Del("code_challenge") }, "invalid_request"},
-		"plain method":        {func(v url.Values) { v.Set("code_challenge_method", "plain") }, "invalid_request"},
-		"no method":           {func(v url.Values) { v.Del("code_challenge_method") }, "invalid_request"},
-		"malformed challenge": {func(v url.Values) { v.Set("code_challenge", "too-short") }, "invalid_request"},
-		"oversized state":     {func(v url.Values) { v.Set("state", strings.Repeat("s", 600)) }, "invalid_request"},
+		"unknown client":             {func(m M) { m["client_id"] = "app_nope" }, 400, "invalid_client"},
+		"missing client":             {func(m M) { delete(m, "client_id") }, 400, "invalid_client"},
+		"unregistered redirect":      {func(m M) { m["redirect_uri"] = "https://evil.example/cb" }, 400, "invalid_redirect_uri"},
+		"redirect with extra query":  {func(m M) { m["redirect_uri"] = redirectURI + "?next=https://evil.example" }, 400, "invalid_redirect_uri"},
+		"redirect differing by case": {func(m M) { m["redirect_uri"] = strings.ToUpper(redirectURI) }, 400, "invalid_redirect_uri"},
+		"missing redirect":           {func(m M) { delete(m, "redirect_uri") }, 400, "invalid_redirect_uri"},
+		"implicit flow":              {func(m M) { m["response_type"] = "token" }, 400, "unsupported_response_type"},
+		"no challenge":               {func(m M) { delete(m, "code_challenge") }, 400, "invalid_request"},
+		"plain method":               {func(m M) { m["code_challenge_method"] = "plain" }, 400, "invalid_request"},
+		"no method":                  {func(m M) { delete(m, "code_challenge_method") }, 400, "invalid_request"},
+		"malformed challenge":        {func(m M) { m["code_challenge"] = "too-short" }, 400, "invalid_request"},
+		"oversized state":            {func(m M) { m["state"] = strings.Repeat("s", 600) }, 400, "invalid_request"},
+		"unknown field":              {func(m M) { m["csrf_token"] = "x" }, 400, "invalid_json"},
+		"response_type left out":     {func(m M) { delete(m, "response_type") }, 200, ""},
+		"state and scope left out":   {func(m M) { delete(m, "state"); delete(m, "scope") }, 200, ""},
 	} {
-		v := authParams(clientID)
-		tc.mod(v)
-		p := b.open(v)
-		if p.Status != http.StatusSeeOther || p.Location == nil || p.Location.Query().Get("error") != tc.want ||
-			p.Location.Host != "app.example.com" || p.Location.Query().Get("code") != "" {
-			t.Errorf("%s: got %d %v, want a redirect with error=%s", name, p.Status, p.Location, tc.want)
+		body := authBody(clientID, "ada@example.com", password)
+		tc.mod(body)
+		if r := h.authorize(body); r.Status != tc.status || r.code() != tc.want {
+			t.Errorf("%s: got %d %q, want %d %q (%s)", name, r.Status, r.code(), tc.status, tc.want, r.Raw)
+		} else if tc.status != 200 && strings.Contains(r.Raw, "kyc_") {
+			t.Errorf("%s: a rejected request still returned a code", name)
 		}
-	}
-
-	// Hostile parameter values are escaped in the page and survive the round trip intact.
-	evil := `"><script>alert(1)</script>`
-	v := authParams(clientID)
-	v.Set("state", evil)
-	form := b.open(v)
-	if strings.Contains(form.Body, "<script>") {
-		t.Fatal("state was reflected unescaped into the sign-in page")
-	}
-	if done := b.submit(form, "ada@example.com", password); done.Location == nil || done.Location.Query().Get("state") != evil {
-		t.Fatalf("state was not returned unchanged: %v", done.Location)
 	}
 }
 
-func TestSignInPageDefences(t *testing.T) {
+func TestAuthorizeDefences(t *testing.T) {
 	h, _, clientID := pkceSetup(t)
 
-	// Login CSRF: a form posted without the cookie from Keyora's own page is refused.
-	b := h.browser()
-	form := b.open(authParams(clientID))
-	if p := h.browser().submit(form, "ada@example.com", password); p.Status != http.StatusForbidden || p.Location != nil {
-		t.Fatalf("cross-site form post was accepted: %d %v", p.Status, p.Location)
-	}
-	forged := form
-	forged.Body = regexp.MustCompile(`name="csrf_token" value="[^"]*"`).ReplaceAllString(form.Body, `name="csrf_token" value="forged"`)
-	if p := b.submit(forged, "ada@example.com", password); p.Status != http.StatusForbidden || p.Location != nil {
-		t.Fatalf("forged CSRF token accepted: %d", p.Status)
+	// A browser may only call from an origin registered on the application.
+	h.expect(h.authorize(authBody(clientID, "ada@example.com", password), "Origin", "https://evil.example"), 403, "origin_not_allowed")
+	ok := h.expect(h.authorize(authBody(clientID, "ada@example.com", password), "Origin", "https://app.example.com"), 200, "")
+	if ok.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" || ok.Header.Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("CORS headers for the application's own origin: %v", ok.Header)
 	}
 
-	// Wrong password: the page again, no redirect, no hint about which part was wrong.
-	b = h.browser()
-	wrong := b.submit(b.open(authParams(clientID)), "ada@example.com", "wrong password")
-	unknown := b.submit(b.open(authParams(clientID)), "nobody@example.com", "wrong password")
-	if wrong.Status != 401 || wrong.Location != nil || !strings.Contains(wrong.Body, "Incorrect email or password.") || strings.Contains(wrong.Body, "wrong password") {
-		t.Fatalf("wrong password: %d %s", wrong.Status, wrong.Body)
+	// The endpoint only reads JSON, which an HTML form on another site cannot send.
+	req, _ := http.NewRequest("POST", h.srv.URL+"/api/v1/oauth/authorize", strings.NewReader(url.Values{
+		"client_id": {clientID}, "redirect_uri": {redirectURI}, "email": {"ada@example.com"}, "password": {password},
+		"code_challenge": {challengeFor(verifier)}, "code_challenge_method": {"S256"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if unknown.Status != 401 || !strings.Contains(unknown.Body, "Incorrect email or password.") {
-		t.Fatalf("unknown user is distinguishable from a wrong password: %d", unknown.Status)
+	raw, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 400 || !strings.Contains(string(raw), "unsupported_media_type") || strings.Contains(string(raw), "kyc_") {
+		t.Fatalf("form post: %d %s", res.StatusCode, raw)
 	}
-	// The hosted page shares the account lockout with the API (limit is 3 in tests).
-	b.submit(b.open(authParams(clientID)), "ada@example.com", "wrong again")
-	b.submit(b.open(authParams(clientID)), "ada@example.com", "and again")
-	if locked := b.submit(b.open(authParams(clientID)), "ada@example.com", password); locked.Status != http.StatusLocked || locked.Location != nil {
-		t.Fatalf("lockout not enforced on the hosted page: %d", locked.Status)
+
+	// Wrong password and unknown user are indistinguishable, and nothing is echoed.
+	wrong := h.expect(h.authorize(authBody(clientID, "ada@example.com", "wrong password")), 401, "invalid_credentials")
+	unknown := h.expect(h.authorize(authBody(clientID, "nobody@example.com", "wrong password")), 401, "invalid_credentials")
+	if wrong.Body.Error.Message != unknown.Body.Error.Message || strings.Contains(wrong.Raw, "wrong password") {
+		t.Fatalf("wrong password vs unknown user: %s / %s", wrong.Raw, unknown.Raw)
 	}
+	// The authorization endpoint shares the account lockout with the login API (limit is 3 in tests).
+	h.authorize(authBody(clientID, "ada@example.com", "wrong again"))
+	h.authorize(authBody(clientID, "ada@example.com", "and again"))
+	h.expect(h.authorize(authBody(clientID, "ada@example.com", password)), 423, "account_locked")
 }
 
 func TestOAuthMetadata(t *testing.T) {

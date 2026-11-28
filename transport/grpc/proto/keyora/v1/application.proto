@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package keyora.v1;
+
+import "keyora/v1/types.proto";
+
+option go_package = "github.com/rabbicse/keyora/transport/grpc/keyorapb;keyorapb";
+
+// ApplicationService manages the applications (clients) of a tenant. It is
+// the gRPC form of the REST routes under
+// /api/v1/tenants/{tenant_id}/applications.
+//
+// Every RPC needs "authorization: Bearer <credential>" metadata, where the
+// credential is the root admin key or the access token of an administrator
+// of the tenant named in the request. An administrator of another tenant
+// gets PERMISSION_DENIED.
+//
+// A client secret is returned in plain text exactly twice in its life: by
+// CreateApplication and by RotateApplicationSecret. Keyora stores only a
+// hash of it, so it cannot be read back later.
+service ApplicationService {
+  // CreateApplication registers an application. For a confidential
+  // application the response carries the client secret.
+  rpc CreateApplication(CreateApplicationRequest) returns (CreateApplicationResponse);
+
+  // ListApplications lists the tenant's applications.
+  rpc ListApplications(ListApplicationsRequest) returns (ListApplicationsResponse);
+
+  // GetApplication returns one application.
+  rpc GetApplication(GetApplicationRequest) returns (GetApplicationResponse);
+
+  // UpdateApplication changes the fields that are set in the request and
+  // leaves the others as they are. The type of an application cannot be
+  // changed.
+  rpc UpdateApplication(UpdateApplicationRequest) returns (UpdateApplicationResponse);
+
+  // DeleteApplication removes an application.
+  rpc DeleteApplication(DeleteApplicationRequest) returns (DeleteApplicationResponse);
+
+  // RotateApplicationSecret replaces the client secret of a confidential
+  // application and returns the new one. The old secret stops working at
+  // once. A public application has no secret: INVALID_ARGUMENT with the
+  // reason "not_confidential".
+  rpc RotateApplicationSecret(RotateApplicationSecretRequest) returns (RotateApplicationSecretResponse);
+}
+
+message CreateApplicationRequest {
+  string tenant_id = 1;
+  // Required; unique within the tenant.
+  string name = 2;
+  // "confidential" (the default when empty) or "public".
+  string type = 3;
+  // Absolute URIs, without fragment or wildcard; at most 50.
+  repeated string redirect_uris = 4;
+  // Origins such as "https://app.example.com", with no path; at most 50.
+  repeated string allowed_origins = 5;
+  // 60 to 86400. Defaults to the server's configured access token lifetime.
+  optional int64 access_token_ttl_seconds = 6;
+  // Longer than the access token lifetime and at most one year. Defaults to
+  // the server's configured refresh token lifetime.
+  optional int64 refresh_token_ttl_seconds = 7;
+}
+
+message CreateApplicationResponse {
+  Application application = 1;
+  // The client secret of a confidential application, in plain text. It is
+  // shown only here; store it now. Empty for a public application.
+  string client_secret = 2;
+}
+
+message ListApplicationsRequest {
+  string tenant_id = 1;
+  // Page size, 1 to 100. 0 means the default of 20.
+  int32 limit = 2;
+  // Number of applications to skip.
+  int32 offset = 3;
+}
+
+message ListApplicationsResponse {
+  repeated Application applications = 1;
+  // Number of applications in total, across all pages.
+  int64 total = 2;
+}
+
+message GetApplicationRequest {
+  string tenant_id = 1;
+  // The application's id (not its client_id).
+  string id = 2;
+}
+
+message GetApplicationResponse {
+  Application application = 1;
+}
+
+// UpdateApplicationRequest changes only the fields that are set. A list field
+// that is set replaces the whole list; set it with no values to clear it.
+message UpdateApplicationRequest {
+  string tenant_id = 1;
+  // The application's id (not its client_id).
+  string id = 2;
+  optional string name = 3;
+  StringList redirect_uris = 4;
+  StringList allowed_origins = 5;
+  optional int64 access_token_ttl_seconds = 6;
+  optional int64 refresh_token_ttl_seconds = 7;
+  // "active" or "disabled".
+  optional string status = 8;
+}
+
+message UpdateApplicationResponse {
+  Application application = 1;
+}
+
+message DeleteApplicationRequest {
+  string tenant_id = 1;
+  // The application's id (not its client_id).
+  string id = 2;
+}
+
+message DeleteApplicationResponse {}
+
+message RotateApplicationSecretRequest {
+  string tenant_id = 1;
+  // The application's id (not its client_id).
+  string id = 2;
+}
+
+message RotateApplicationSecretResponse {
+  Application application = 1;
+  // The new client secret, in plain text. It is shown only here.
+  string client_secret = 2;
+}

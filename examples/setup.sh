@@ -30,8 +30,9 @@ TENANT_ID="$(api POST /api/v1/tenants "{\"slug\":\"examples-$(date +%s)\",\"name
 T="/api/v1/tenants/$TENANT_ID"
 
 # A 60-second access token keeps the "expired token" scenario quick to observe.
-# The redirect URI is never visited: verify.py uses it to obtain an ID token and
-# check that the example refuses it as an API credential.
+# The redirect URI is never visited: verify.py names it when it requests an
+# authorization code to obtain an ID token, and checks that the example refuses
+# that token as an API credential.
 VERIFY_REDIRECT_URI="http://localhost:9099/verify-callback"
 APP="$(api POST "$T/applications" "{\"name\":\"example-app\",\"type\":\"confidential\",\"access_token_ttl_seconds\":60,\"redirect_uris\":[\"$VERIFY_REDIRECT_URI\"]}")"
 CLIENT_ID="$(printf '%s' "$APP" | field client_id)"
@@ -39,8 +40,10 @@ CLIENT_SECRET="$(printf '%s' "$APP" | field client_secret)"
 # A second application, used to show that tokens issued to another audience are rejected.
 OTHER="$(api POST "$T/applications" '{"name":"other-app","type":"confidential"}')"
 
-# A public application (no secret) for the authorization code + PKCE example.
-PKCE_REDIRECT_URI="${PKCE_REDIRECT_URI:-http://localhost:9010/callback}"
+# A public application (no secret) for the authorization code + PKCE example,
+# which plays a native app. The redirect URI is never visited (Keyora redirects
+# nowhere); the code is bound to it and the token request repeats it.
+PKCE_REDIRECT_URI="${PKCE_REDIRECT_URI:-com.example.keyora-pkce:/callback}"
 PKCE="$(api POST "$T/applications" "{\"name\":\"example-pkce\",\"type\":\"public\",\"redirect_uris\":[\"$PKCE_REDIRECT_URI\"]}")"
 
 api POST "$T/permissions" '{"name":"notes:read","description":"Read notes"}' >/dev/null
@@ -55,8 +58,9 @@ KEYORA_URL=$KEYORA_URL
 KEYORA_ISSUER=${KEYORA_ISSUER:-$KEYORA_URL}
 KEYORA_CLIENT_ID=$CLIENT_ID
 KEYORA_CLIENT_SECRET=$CLIENT_SECRET
-# Public application used by examples/golang/pkce (redirects to $PKCE_REDIRECT_URI).
+# Public application used by examples/golang/pkce.
 KEYORA_PKCE_CLIENT_ID=$(printf '%s' "$PKCE" | field client_id)
+KEYORA_PKCE_REDIRECT_URI=$PKCE_REDIRECT_URI
 
 # Used only by examples/verify.py to grant roles and to mint a foreign token.
 KEYORA_ADMIN_KEY=$KEYORA_ADMIN_KEY

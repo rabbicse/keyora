@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package keyora.v1;
+
+import "keyora/v1/types.proto";
+
+option go_package = "github.com/rabbicse/keyora/transport/grpc/keyorapb;keyorapb";
+
+// TenantService manages tenants. It is the gRPC form of the REST routes
+// /api/v1/tenants and /api/v1/tenants/{tenant_id}.
+//
+// Creating, listing and updating tenants needs the root admin key, sent as
+// "authorization: Bearer <admin key>". GetTenant is also open to an
+// administrator of that tenant, with their access token.
+service TenantService {
+  // CreateTenant creates a tenant together with its built-in "keyora:admin"
+  // permission and "keyora-admin" role. Root only.
+  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
+
+  // ListTenants lists all tenants. Root only.
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+
+  // GetTenant returns one tenant. Root, or an administrator of the tenant.
+  rpc GetTenant(GetTenantRequest) returns (GetTenantResponse);
+
+  // UpdateTenant changes a tenant's name or status. Root only. The slug
+  // cannot be changed.
+  rpc UpdateTenant(UpdateTenantRequest) returns (UpdateTenantResponse);
+}
+
+message CreateTenantRequest {
+  // 2 to 63 lowercase letters, digits or hyphens; unique.
+  string slug = 1;
+  string name = 2;
+}
+
+message CreateTenantResponse {
+  Tenant tenant = 1;
+}
+
+message ListTenantsRequest {
+  // Page size, 1 to 100. 0 means the default of 20.
+  int32 limit = 1;
+  // Number of tenants to skip.
+  int32 offset = 2;
+}
+
+message ListTenantsResponse {
+  repeated Tenant tenants = 1;
+  // Number of tenants in total, across all pages.
+  int64 total = 2;
+}
+
+message GetTenantRequest {
+  string tenant_id = 1;
+}
+
+message GetTenantResponse {
+  Tenant tenant = 1;
+}
+
+// UpdateTenantRequest changes only the fields that are set.
+message UpdateTenantRequest {
+  string tenant_id = 1;
+  optional string name = 2;
+  // "active" or "suspended".
+  optional string status = 3;
+}
+
+message UpdateTenantResponse {
+  Tenant tenant = 1;
+}

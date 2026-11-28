@@ -4,6 +4,12 @@ updates:
     directory: /cmd/keyora
     schedule: { interval: weekly }
   - package-ecosystem: gomod
+    directory: /transport/graphql
+    schedule: { interval: weekly }
+  - package-ecosystem: gomod
+    directory: /transport/grpc
+    schedule: { interval: weekly }
+  - package-ecosystem: gomod
     directory: /adapters/gin
     schedule: { interval: weekly }
   - package-ecosystem: github-actions

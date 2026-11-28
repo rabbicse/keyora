@@ -12,12 +12,10 @@ Needs Python 3.8+ and nothing else. Reads examples/.env (written by setup.sh).
 """
 import base64
 import hashlib
-import http.cookiejar
 import json
 import os
 import sys
 import time
-import re
 import secrets
 import urllib.error
 import urllib.parse
@@ -99,35 +97,23 @@ def tamper(token):
 
 
 def id_token_for(email, password):
-    """Signs in through Keyora's hosted page (authorization code flow with PKCE,
-    scope=openid) as the example application and returns the ID token."""
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):
-            return None
-    browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()), NoRedirect)
+    """Runs the authorization code flow with PKCE (scope=openid) as the example
+    application, entirely through the API, and returns
+    the ID token."""
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     redirect_uri = ENV["KEYORA_VERIFY_REDIRECT_URI"]
-    params = {"response_type": "code", "client_id": ENV["KEYORA_CLIENT_ID"], "redirect_uri": redirect_uri,
-              "state": secrets.token_urlsafe(16), "scope": "openid email", "nonce": secrets.token_urlsafe(16),
-              "code_challenge": challenge, "code_challenge_method": "S256"}
-    page = browser.open(KEYORA + "/api/v1/oauth/authorize?" + urllib.parse.urlencode(params), timeout=20).read().decode()
-    csrf = re.search(r'name="csrf_token" value="([^"]*)"', page)
-    if not csrf:
-        sys.exit("setup problem: Keyora's sign-in page did not render")
-    form = dict(params, csrf_token=csrf.group(1), email=email, password=password)
-    try:
-        browser.open(KEYORA + "/api/v1/oauth/authorize", urllib.parse.urlencode(form).encode(), timeout=20)
-        sys.exit("setup problem: sign-in did not redirect")
-    except urllib.error.HTTPError as e:
-        location = e.headers.get("Location", "")
-    code = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query).get("code", [""])[0]
-    if not code:
-        sys.exit(f"setup problem: no authorization code in redirect {location!r}")
-    body = urllib.parse.urlencode({"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
+    status, body = call("POST", KEYORA + "/api/v1/oauth/authorize", {
+        "client_id": ENV["KEYORA_CLIENT_ID"], "redirect_uri": redirect_uri, "response_type": "code",
+        "state": secrets.token_urlsafe(16), "scope": "openid email", "nonce": secrets.token_urlsafe(16),
+        "code_challenge": challenge, "code_challenge_method": "S256", "email": email, "password": password})
+    code = (body.get("data") or {}).get("code", "") if isinstance(body, dict) else ""
+    if status != 200 or not code:
+        sys.exit(f"setup problem: no authorization code: {status} {body}")
+    form = urllib.parse.urlencode({"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
                                    "code_verifier": verifier, "client_id": ENV["KEYORA_CLIENT_ID"],
                                    "client_secret": ENV["KEYORA_CLIENT_SECRET"]}).encode()
-    with urllib.request.urlopen(urllib.request.Request(KEYORA + "/api/v1/oauth/token", data=body), timeout=20) as res:
+    with urllib.request.urlopen(urllib.request.Request(KEYORA + "/api/v1/oauth/token", data=form), timeout=20) as res:
         return json.loads(res.read()).get("id_token", "")
 
 

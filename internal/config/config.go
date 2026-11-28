@@ -51,6 +51,16 @@ type Config struct {
 	SMTPPassword string
 	SMTPFrom     string
 
+	// GraphQLEnabled serves the GraphQL API at POST /graphql on the HTTP
+	// listener, in binaries that link the GraphQL transport.
+	GraphQLEnabled bool
+	// GraphQLIntrospection lets clients query the schema itself.
+	GraphQLIntrospection bool
+	// GRPCAddr is the listen address of the gRPC API, in binaries that link
+	// the gRPC transport. Empty disables it.
+	GRPCAddr       string
+	GRPCReflection bool
+
 	LogLevel        string
 	LogFormat       string
 	MetricsEnabled  bool
@@ -103,6 +113,11 @@ func load(get func(string) string) (*Config, error) {
 		SMTPUsername: l.str("KEYORA_SMTP_USERNAME", ""),
 		SMTPPassword: l.str("KEYORA_SMTP_PASSWORD", ""),
 		SMTPFrom:     l.str("KEYORA_SMTP_FROM", ""),
+
+		GraphQLEnabled:       l.bool("KEYORA_GRAPHQL_ENABLED", true),
+		GraphQLIntrospection: l.bool("KEYORA_GRAPHQL_INTROSPECTION", true),
+		GRPCAddr:             l.str("KEYORA_GRPC_ADDR", ""),
+		GRPCReflection:       l.bool("KEYORA_GRPC_REFLECTION", true),
 
 		LogLevel:        l.str("KEYORA_LOG_LEVEL", "info"),
 		LogFormat:       l.str("KEYORA_LOG_FORMAT", "json"),

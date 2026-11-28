@@ -1,0 +1,498 @@
+"""
+Keyora GraphQL API.
+
+It offers the operations of the versioned REST API (/api/v1) over one
+endpoint, POST /graphql. Authentication is the same as for REST:
+
+  - self-service and management fields read "Authorization: Bearer <token>",
+    where the token is a user's access token or the root admin key;
+  - fields that act for an application take its credentials from HTTP Basic
+    (client_id:client_secret) or from the clientId / clientSecret arguments.
+    HTTP Basic wins when both are present.
+
+A field that fails resolves to null and adds an entry to "errors" whose
+extensions carry the machine-readable code, the request ID and, for
+validation failures, per-field details.
+"""
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+"An instant in time, as an RFC 3339 string in UTC."
+scalar Time
+
+"A JSON object whose keys and values are strings."
+scalar StringMap
+
+type Query {
+  # ---- authentication ----
+
+  """
+  Live state of an access token as Keyora sees it: revoked sessions, disabled
+  users and suspended tenants make a token inactive before it expires.
+  Requires the credentials of a confidential application of the token's
+  tenant. Rate limited.
+  """
+  introspectToken(token: String!, clientId: String, clientSecret: String): TokenIntrospection
+
+  """
+  OpenID Connect claims about the user behind the bearer access token.
+  Rate limited.
+  """
+  userinfo: UserInfo
+
+  # ---- self-service (bearer access token) ----
+
+  "The signed-in user with the roles and permissions of the access token."
+  me: Profile
+
+  "The signed-in user's active sessions."
+  mySessions(limit: Int, offset: Int): SessionConnection
+
+  # ---- management (root admin key, or an administrator of the tenant) ----
+
+  "All tenants. Root admin key only."
+  tenants(limit: Int, offset: Int): TenantConnection
+  tenant(id: ID!): Tenant
+
+  applications(tenantId: ID!, limit: Int, offset: Int): ApplicationConnection
+  application(tenantId: ID!, id: ID!): Application
+
+  "Users of a tenant, optionally filtered by part of the email address or by status."
+  users(tenantId: ID!, email: String, status: String, limit: Int, offset: Int): UserConnection
+  user(tenantId: ID!, id: ID!): User
+  "Roles assigned to one user."
+  userRoles(tenantId: ID!, userId: ID!): [Role!]
+
+  permissions(tenantId: ID!, limit: Int, offset: Int): PermissionConnection
+
+  roles(tenantId: ID!, limit: Int, offset: Int): RoleConnection
+  role(tenantId: ID!, id: ID!): Role
+
+  "Sessions of a tenant, optionally of one user and optionally only active ones."
+  sessions(tenantId: ID!, userId: ID, active: Boolean, limit: Int, offset: Int): SessionConnection
+
+  "Audit trail of a tenant, optionally filtered by event type or actor."
+  auditEvents(tenantId: ID!, type: String, actorId: String, limit: Int, offset: Int): AuditEventConnection
+}
+
+type Mutation {
+  # ---- authentication (application credentials; every field is rate limited) ----
+
+  "Creates a user in the application's tenant and sends the verification email."
+  register(email: String!, password: String!, name: String, clientId: String, clientSecret: String): User
+
+  "Signs a user in with email and password and opens a session."
+  login(email: String!, password: String!, clientId: String, clientSecret: String): LoginResult
+
+  """
+  Exchanges a refresh token for new tokens. Refresh tokens are single use:
+  presenting one twice revokes the session.
+  """
+  refresh(refreshToken: String!, clientId: String, clientSecret: String): Tokens
+
+  """
+  Revokes a session. Either pass a refresh token together with application
+  credentials, or pass nothing and send the bearer access token of the
+  session to end. Returns true.
+  """
+  logout(refreshToken: String, clientId: String, clientSecret: String): Boolean
+
+  """
+  Sends a new verification email. Returns true whether or not the address
+  belongs to an account.
+  """
+  requestEmailVerification(email: String!, clientId: String, clientSecret: String): Boolean
+
+  "Confirms an email address with the token from the verification email. Returns true."
+  confirmEmail(token: String!): Boolean
+
+  """
+  Sends a password reset email. Returns true whether or not the address
+  belongs to an account.
+  """
+  forgotPassword(email: String!, clientId: String, clientSecret: String): Boolean
+
+  """
+  Sets a new password with the token from the reset email and revokes the
+  user's sessions. Returns true.
+  """
+  resetPassword(token: String!, newPassword: String!): Boolean
+
+  # ---- OAuth 2.0 ----
+
+  """
+  Checks a user's email and password and issues an authorization code
+  (authorization code flow with PKCE). The request's Origin header, when
+  present, must be one of the application's allowed origins.
+  """
+  authorize(input: AuthorizeInput!): Authorization
+
+  "The token endpoint: exchanges a grant for tokens."
+  token(input: TokenInput!): Tokens
+
+  # ---- self-service (bearer access token) ----
+
+  updateMe(name: String!): User
+
+  "Changes the password and revokes the user's other sessions. Returns true."
+  changePassword(currentPassword: String!, newPassword: String!): Boolean
+
+  "Revokes one of the signed-in user's sessions. Returns true."
+  revokeMySession(sessionId: ID!): Boolean
+
+  # ---- management (root admin key, or an administrator of the tenant) ----
+
+  "Root admin key only."
+  createTenant(slug: String!, name: String!): Tenant
+
+  "Root admin key only. status is active or suspended."
+  updateTenant(id: ID!, name: String, status: String): Tenant
+
+  """
+  Registers an application. The result carries the client secret of a
+  confidential application; it is not shown again.
+  """
+  createApplication(tenantId: ID!, input: ApplicationInput!): ApplicationWithSecret
+
+  "Omitted fields keep their value."
+  updateApplication(tenantId: ID!, id: ID!, input: ApplicationInput!): Application
+
+  "Returns true."
+  deleteApplication(tenantId: ID!, id: ID!): Boolean
+
+  """
+  Replaces the client secret of a confidential application. The previous
+  secret stops working at once; the new one is not shown again.
+  """
+  rotateApplicationSecret(tenantId: ID!, id: ID!): ApplicationWithSecret
+
+  createUser(tenantId: ID!, email: String!, password: String!, name: String, emailVerified: Boolean): User
+
+  """
+  Omitted fields keep their value. status is active or disabled; disabling a
+  user revokes all of their sessions.
+  """
+  updateUser(tenantId: ID!, id: ID!, name: String, status: String, emailVerified: Boolean): User
+
+  "Returns true."
+  deleteUser(tenantId: ID!, id: ID!): Boolean
+
+  "Clears the lockout that follows too many failed sign-in attempts."
+  unlockUser(tenantId: ID!, id: ID!): User
+
+  "Returns true."
+  assignRole(tenantId: ID!, userId: ID!, roleId: ID!): Boolean
+
+  "Returns true."
+  unassignRole(tenantId: ID!, userId: ID!, roleId: ID!): Boolean
+
+  createPermission(tenantId: ID!, name: String!, description: String): Permission
+
+  "Returns true."
+  deletePermission(tenantId: ID!, id: ID!): Boolean
+
+  "permissions lists permission names that already exist in the tenant."
+  createRole(tenantId: ID!, name: String!, description: String, permissions: [String!]): Role
+
+  "Omitted fields keep their value."
+  updateRole(tenantId: ID!, id: ID!, name: String, description: String): Role
+
+  "Returns true."
+  deleteRole(tenantId: ID!, id: ID!): Boolean
+
+  "Replaces the permissions of a role with the named ones."
+  setRolePermissions(tenantId: ID!, id: ID!, permissions: [String!]!): Role
+
+  "Revokes any session of the tenant. Returns true."
+  revokeSession(tenantId: ID!, id: ID!): Boolean
+}
+
+# ---- inputs ----
+
+"""
+An authorization request (response type "code") together with the user's
+credentials, as collected by the application.
+"""
+input AuthorizeInput {
+  clientId: String!
+  "Must equal one of the application's registered redirect URIs."
+  redirectUri: String!
+  "Only \"code\" is supported; it is also the default."
+  responseType: String
+  "Opaque value echoed in the result."
+  state: String
+  "Space-separated scopes. \"openid\" requests an ID token."
+  scope: String
+  "OpenID Connect nonce, echoed in the ID token."
+  nonce: String
+  "PKCE challenge: BASE64URL(SHA-256(code verifier))."
+  codeChallenge: String!
+  "Only \"S256\" is supported."
+  codeChallengeMethod: String!
+  email: String!
+  password: String!
+}
+
+enum GrantType {
+  "Needs code, redirectUri and codeVerifier."
+  AUTHORIZATION_CODE
+  "Needs refreshToken."
+  REFRESH_TOKEN
+  "Needs the credentials of a confidential application."
+  CLIENT_CREDENTIALS
+}
+
+input TokenInput {
+  grantType: GrantType!
+  "The authorization code (AUTHORIZATION_CODE)."
+  code: String
+  "The redirect URI the code was issued for (AUTHORIZATION_CODE)."
+  redirectUri: String
+  "The PKCE code verifier (AUTHORIZATION_CODE)."
+  codeVerifier: String
+  "The refresh token (REFRESH_TOKEN)."
+  refreshToken: String
+  clientId: String
+  clientSecret: String
+}
+
+input ApplicationInput {
+  "Required when creating."
+  name: String
+  "confidential (default) or public. Set when creating; it cannot change."
+  type: String
+  "Exact redirect URIs the authorization code flow may return to."
+  redirectUris: [String!]
+  "Browser origins that may call Keyora for this application."
+  allowedOrigins: [String!]
+  accessTokenTtlSeconds: Int
+  refreshTokenTtlSeconds: Int
+  "active or disabled."
+  status: String
+}
+
+# ---- results ----
+
+"The isolation boundary: users, applications, roles and sessions belong to one tenant."
+type Tenant {
+  id: ID!
+  slug: String!
+  name: String!
+  "active or suspended."
+  status: String!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+"A registered client of a tenant."
+type Application {
+  id: ID!
+  tenantId: ID!
+  name: String!
+  "confidential or public."
+  type: String!
+  clientId: String!
+  redirectUris: [String!]!
+  allowedOrigins: [String!]!
+  accessTokenTtlSeconds: Int!
+  refreshTokenTtlSeconds: Int!
+  "active or disabled."
+  status: String!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+"An application together with a client secret that was just generated."
+type ApplicationWithSecret {
+  application: Application!
+  "Null for public applications, which have no secret."
+  clientSecret: String
+}
+
+type User {
+  id: ID!
+  tenantId: ID!
+  email: String!
+  name: String!
+  "active or disabled."
+  status: String!
+  emailVerified: Boolean!
+  "Set while the account is locked after too many failed sign-in attempts."
+  lockedUntil: Time
+  lastLoginAt: Time
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+type Profile {
+  user: User!
+  "Role names carried by the access token."
+  roles: [String!]!
+  "Permission names carried by the access token."
+  permissions: [String!]!
+}
+
+type Permission {
+  id: ID!
+  tenantId: ID!
+  name: String!
+  description: String!
+  createdAt: Time!
+}
+
+type Role {
+  id: ID!
+  tenantId: ID!
+  name: String!
+  description: String!
+  "Names of the permissions the role grants."
+  permissions: [String!]!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+"One sign-in on one device. Refresh tokens rotate inside it."
+type Session {
+  id: ID!
+  tenantId: ID!
+  userId: ID!
+  applicationId: ID!
+  ip: String!
+  userAgent: String!
+  createdAt: Time!
+  lastUsedAt: Time!
+  expiresAt: Time!
+  revokedAt: Time
+}
+
+type AuditEvent {
+  id: ID!
+  tenantId: ID!
+  "Event name, for example user.login or application.created."
+  type: String!
+  "user, application, root or anonymous."
+  actorType: String!
+  actorId: String!
+  targetId: String
+  ip: String
+  userAgent: String
+  requestId: String
+  metadata: StringMap!
+  createdAt: Time!
+}
+
+type Tokens {
+  "A signed JWT for the application's own API."
+  accessToken: String!
+  tokenType: String!
+  "Lifetime of the access token in seconds."
+  expiresIn: Int!
+  "Null for the CLIENT_CREDENTIALS grant, which opens no session."
+  refreshToken: String
+  refreshExpiresIn: Int
+  sessionId: ID
+  "OpenID Connect ID token; set by the AUTHORIZATION_CODE grant when the openid scope was requested."
+  idToken: String
+  "Granted scope; set by the AUTHORIZATION_CODE grant."
+  scope: String
+}
+
+type LoginResult {
+  tokens: Tokens!
+  user: User!
+}
+
+type TokenIntrospection {
+  "False for anything that is not a currently usable access token; every other field is then null or empty."
+  active: Boolean!
+  "The user ID."
+  subject: ID
+  tenantId: ID
+  clientId: String
+  sessionId: ID
+  email: String
+  roles: [String!]!
+  permissions: [String!]!
+  issuer: String
+  expiresAt: Time
+  issuedAt: Time
+}
+
+type UserInfo {
+  "The user ID."
+  sub: ID!
+  email: String
+  emailVerified: Boolean
+  name: String
+}
+
+type Authorization {
+  "The single-use authorization code."
+  code: String!
+  "The request's state."
+  state: String
+  "The registered redirect URI the code is bound to."
+  redirectUri: String!
+  "redirectUri with code, state and iss appended as query parameters."
+  redirectTo: String!
+  "Lifetime of the code in seconds."
+  expiresIn: Int!
+  "The issuer identifier of this server."
+  iss: String!
+}
+
+# ---- lists ----
+#
+# List fields take limit (1 to 100, default 20) and offset (default 0). total
+# is the number of matching records, not the number returned.
+
+type TenantConnection {
+  items: [Tenant!]!
+  total: Int!
+  limit: Int!
+  offset: Int!
+}
+
+type ApplicationConnection {
+  items: [Application!]!
+  total: Int!
+  limit: Int!
+  offset: Int!
+}
+
+type UserConnection {
+  items: [User!]!
+  total: Int!
+  limit: Int!
+  offset: Int!
+}
+
+type PermissionConnection {
+  items: [Permission!]!
+  total: Int!
+  limit: Int!
+  offset: Int!
+}
+
+type RoleConnection {
+  items: [Role!]!
+  total: Int!
+  limit: Int!
+  offset: Int!
+}
+
+type SessionConnection {
+  items: [Session!]!
+  total: Int!
+  limit: Int!
+  offset: Int!
+}
+
+type AuditEventConnection {
+  items: [AuditEvent!]!
+  total: Int!
+  limit: Int!
+  offset: Int!
+}

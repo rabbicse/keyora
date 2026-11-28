@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"regexp"
 	"time"
 
@@ -104,9 +105,90 @@ func ValidateAuthorizeRequest(req AuthorizeRequest) (oauthError, description str
 	return "", ""
 }
 
-// Authorize signs the user in on Keyora's hosted page and returns a
-// single-use authorization code bound to the application, redirect URI and
-// PKCE challenge.
+// Authorization is the outcome of a successful authorization request: the
+// single-use code and the redirect URI it is bound to.
+type Authorization struct {
+	Code string `json:"code"`
+	// State is the request's state, echoed so the caller can match the answer.
+	State string `json:"state,omitempty"`
+	// RedirectURI is the registered redirect URI the code is bound to.
+	RedirectURI string `json:"redirect_uri"`
+	// RedirectTo is RedirectURI with code, state and iss (RFC 9207) appended:
+	// the complete authorization response of RFC 6749 section 4.1.2.
+	RedirectTo string `json:"redirect_to"`
+	// ExpiresIn is the code's lifetime in seconds.
+	ExpiresIn int64  `json:"expires_in"`
+	Issuer    string `json:"iss"`
+}
+
+// RedirectURL appends params, the request's state and the issuer (RFC 9207,
+// which lets a client of several authorization servers detect a mix-up) to
+// the request's redirect URI. Only call it once AuthorizeClient has accepted
+// that URI.
+func (s *Service) RedirectURL(req AuthorizeRequest, params url.Values) (string, error) {
+	u, err := url.Parse(req.RedirectURI)
+	if err != nil {
+		return "", domain.ErrInvalidRedirectURI
+	}
+	q := u.Query()
+	for k := range params {
+		q.Set(k, params.Get(k))
+	}
+	if req.State != "" {
+		q.Set("state", req.State)
+	}
+	q.Set("iss", s.opt.Issuer)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// AuthorizeWithPassword is the whole authorization request as one call, for
+// applications that collect the user's credentials themselves (Keyora serves
+// no pages): it checks the application
+// and redirect URI, the request (PKCE is mandatory) and the user's
+// credentials, and returns the authorization code.
+//
+// origin is the browser's Origin header, empty for other callers. A browser
+// may only call from an origin registered on the application, so a page on
+// another site cannot use a visitor's browser to try passwords.
+//
+// Every failure is a domain.Error; nothing is redirected. An invalid request
+// carries the OAuth error code (invalid_request, unsupported_response_type)
+// as its Code.
+func (s *Service) AuthorizeWithPassword(ctx context.Context, req AuthorizeRequest, email, password, origin string, m Meta) (*Authorization, error) {
+	if req.ResponseType == "" {
+		req.ResponseType = "code"
+	}
+	app, err := s.AuthorizeClient(ctx, req)
+	if errors.Is(err, domain.ErrInvalidClient) {
+		// Not a failed authentication (nothing secret was presented): the
+		// client_id simply does not name a usable application.
+		return nil, domain.E(domain.KindInvalid, "invalid_client", "client_id does not name an active application")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if origin != "" && !containsString(app.AllowedOrigins, origin) {
+		return nil, domain.ErrOriginNotAllowed
+	}
+	if code, desc := ValidateAuthorizeRequest(req); code != "" {
+		return nil, domain.E(domain.KindInvalid, code, desc)
+	}
+	code, err := s.Authorize(ctx, app, req, email, password, m)
+	if err != nil {
+		return nil, err
+	}
+	target, err := s.RedirectURL(req, url.Values{"code": {code}})
+	if err != nil {
+		return nil, err
+	}
+	return &Authorization{Code: code, State: req.State, RedirectURI: req.RedirectURI, RedirectTo: target,
+		ExpiresIn: int64(AuthorizationCodeTTL.Seconds()), Issuer: s.opt.Issuer}, nil
+}
+
+// Authorize checks the user's credentials and returns a single-use
+// authorization code bound to the application, redirect URI and PKCE
+// challenge. The caller has already validated app and req.
 func (s *Service) Authorize(ctx context.Context, app *domain.Application, req AuthorizeRequest, email, password string, m Meta) (string, error) {
 	u, m, err := s.verifyCredentials(ctx, app, email, password, m)
 	if err != nil {
@@ -201,6 +283,20 @@ func (s *Service) exchangeCode(ctx context.Context, app *domain.Application, cod
 	}
 	s.audit(ctx, ac.TenantID, "token.code_exchanged", m, ac.UserID, map[string]string{"session_id": sess.ID})
 	return tokens, ac.Scope, nil
+}
+
+// GrantError is how every transport reports a failed token request
+// (authorization_code or refresh_token grant): RFC 6749 section 5.2 has one
+// code, invalid_grant, for every unusable grant, and Keyora gives no hint
+// about which check failed (unknown, expired, replayed, wrong verifier or
+// redirect URI, reused refresh token). Internal errors pass through
+// unchanged so they are logged and masked as usual.
+func GrantError(err error) error {
+	var de *domain.Error
+	if errors.As(err, &de) && de.Kind != domain.KindInternal {
+		return domain.ErrInvalidGrant
+	}
+	return err
 }
 
 // verifyPKCE checks BASE64URL(SHA256(verifier)) == challenge in constant time.

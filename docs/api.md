@@ -26,7 +26,7 @@ and do not use the envelope.
 | Area | Base path | Caller |
 |---|---|---|
 | Sign-up, sign-in, tokens | `/api/v1/auth/*` | Application credentials |
-| OAuth 2.0: browser sign-in (PKCE), token endpoint | `/api/v1/oauth/authorize`, `/api/v1/oauth/token` | Browser; application |
+| OAuth 2.0: authorization code with PKCE, token endpoint | `/api/v1/oauth/authorize`, `/api/v1/oauth/token` | Application |
 | A user's own account | `/api/v1/users/me*` | User access token |
 | Tenants | `/api/v1/tenants` | Root admin key |
 | Applications, users, roles, permissions, sessions, audit | `/api/v1/tenants/{tenant_id}/*` | Root admin key or tenant administrator |
@@ -165,5 +165,5 @@ There is no `Idempotency-Key` header support.
 Cross-origin browser requests are allowed from origins listed in
 `KEYORA_CORS_ALLOWED_ORIGINS` and from every active application's `allowed_origins`.
 Credentials mode is never enabled — tokens travel in the `Authorization` header, not
-in cookies — which is also why the JSON API needs no CSRF tokens. The one HTML form
-Keyora serves, the sign-in page, has its own CSRF protection.
+in cookies — which is also why the API needs no CSRF tokens. Keyora sets no cookies
+and serves no HTML.

@@ -44,7 +44,7 @@ KEYORA_TEST_PGBOUNCER_DSN='postgres://keyora:keyora@127.0.0.1:56432/keyora?sslmo
 | Storage contract | `internal/store/storetest/` | One suite run against the memory store, SQLite, PostgreSQL, and PostgreSQL through PgBouncer in transaction mode: CRUD, constraints, pagination, filters, atomic counters, single-use tokens and codes under concurrency, cascades, expiry purge, tenant isolation, and injection payloads stored inertly. |
 | Use cases | `internal/service/` | Registration, login, enumeration resistance, lockout and recovery, refresh rotation, reuse detection, concurrent refresh, logout, forged and stale tokens, introspection, RBAC, email verification, password reset and change, client authentication, tenant suspension and isolation. |
 | HTTP API | `internal/httpapi/` | Full flows over real HTTP; the envelope and headers; malformed JSON, unknown fields, oversized and deeply nested bodies; injection payloads; privilege escalation against every management endpoint; cross-tenant access; CORS; rate limiting; proxy header trust; metrics. |
-| OAuth 2.0 | `internal/httpapi/oauth_test.go` | Authorization code flow with PKCE through a cookie-keeping client: verifier enforcement, single use, replay revocation, expiry, client and tenant binding, redirect-URI validation, open-redirect refusal, parameter escaping, login CSRF, lockout on the hosted page. |
+| OAuth 2.0 | `internal/httpapi/oauth_test.go` | Authorization code flow with PKCE: the JSON authorization request, verifier enforcement, single use, replay revocation, expiry, client and tenant binding, redirect-URI validation, browser-origin checks, refusal of form posts, enumeration resistance and lockout, and that no endpoint serves markup, sets a cookie or redirects. |
 | OpenID Connect | `internal/httpapi/oidc_legacy_test.go` | ID token contents per scope, `nonce`, userinfo, discovery, and refusal of ID tokens as access tokens. |
 | Tutorial compatibility | same file | The original endpoints end to end, plus the hardening around them: no enumeration, single-use challenges and login tokens, lockout, no cross-redemption of codes between flows, and that the mode is off by default. |
 | API description | `internal/httpapi/openapi_test.go` | Every served route is in `api/openapi.yaml` and every documented route is served. |
@@ -90,5 +90,4 @@ Stated plainly, so nobody assumes otherwise:
 - **Multi-instance behaviour** is covered only through the database-level atomicity
   tests, not by running several processes.
 - **The release workflow** and published container images.
-- **Browsers.** The sign-in page is tested over HTTP with a cookie jar and was checked
-  by hand in Chromium; there is no automated browser suite.
+- **Browsers.** Keyora serves no pages, so there is nothing to test in a browser.

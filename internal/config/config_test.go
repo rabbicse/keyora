@@ -17,6 +17,11 @@ func TestDefaults(t *testing.T) {
 		c.AccessTokenTTL != 15*time.Minute || c.PBKDF2Iterations != 600_000 || !c.AutoMigrate || c.AdminKey != "" {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
+	// GraphQL shares the HTTP listener, so it is on; gRPC needs a port of its
+	// own, so it stays off until one is named.
+	if !c.GraphQLEnabled || !c.GraphQLIntrospection || c.GRPCAddr != "" || !c.GRPCReflection {
+		t.Fatalf("unexpected transport defaults: %+v", c)
+	}
 }
 
 func TestOverrides(t *testing.T) {
@@ -24,9 +29,14 @@ func TestOverrides(t *testing.T) {
 		"KEYORA_ISSUER": "https://id.example.com/", "KEYORA_DB_DRIVER": "postgres", "KEYORA_DB_DSN": "postgres://x",
 		"KEYORA_ACCESS_TOKEN_TTL": "5m", "KEYORA_CORS_ALLOWED_ORIGINS": " https://a.test , https://b.test,",
 		"KEYORA_TRUST_PROXY_HEADERS": "true", "KEYORA_ADMIN_KEY": strings.Repeat("k", 32),
+		"KEYORA_GRAPHQL_ENABLED": "false", "KEYORA_GRAPHQL_INTROSPECTION": "false",
+		"KEYORA_GRPC_ADDR": ":9090", "KEYORA_GRPC_REFLECTION": "false",
 	}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if c.GraphQLEnabled || c.GraphQLIntrospection || c.GRPCAddr != ":9090" || c.GRPCReflection {
+		t.Fatalf("transport overrides not applied: %+v", c)
 	}
 	if c.Issuer != "https://id.example.com" || c.AccessTokenTTL != 5*time.Minute || len(c.CORSAllowedOrigins) != 2 || !c.TrustProxyHeaders {
 		t.Fatalf("overrides not applied: %+v", c)

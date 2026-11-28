@@ -10,7 +10,8 @@ services:
     build: .
     image: keyora:dev
     ports:
-      - "8080:8080"
+      - "8080:8080" # REST and GraphQL
+      - "9090:9090" # gRPC
     environment:
       KEYORA_ADMIN_KEY: ${KEYORA_ADMIN_KEY:?set KEYORA_ADMIN_KEY, for example with openssl rand -hex 32}
       KEYORA_ISSUER: ${KEYORA_ISSUER:-http://localhost:8080}

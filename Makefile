@@ -1,10 +1,10 @@
 # Keyora developer tasks. Run `make help` for a list.
 SHELL := /bin/sh
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-MODULES := . cmd/keyora adapters/gin
-EXAMPLES := examples/golang/standard-library examples/golang/gin
+MODULES := . transport/graphql transport/grpc cmd/keyora adapters/gin
+EXAMPLES := examples/golang/standard-library examples/golang/gin examples/golang/pkce
 
-.PHONY: help build run test test-race cover fuzz vet fmt fmt-check check-deps lint-openapi vuln check docker clean
+.PHONY: help build run test test-race cover fuzz vet fmt fmt-check check-deps lint-openapi proto vuln check docker clean
 
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -45,6 +45,9 @@ check-deps: ## Fail if the core module has any third-party dependency
 
 lint-openapi: ## Validate api/openapi.yaml (needs Node.js)
 	npx --yes @redocly/cli@1 lint api/openapi.yaml
+
+proto: ## Regenerate the gRPC code from transport/grpc/proto (needs protoc and its Go plugins)
+	cd transport/grpc && ./generate.sh
 
 vuln: ## Scan every module for known vulnerabilities
 	@for m in $(MODULES); do (cd $$m && go run golang.org/x/vuln/cmd/govulncheck@latest ./...) || exit 1; done

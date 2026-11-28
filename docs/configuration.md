@@ -80,6 +80,19 @@ application through the API.
 | `KEYORA_LEGACY_TUTORIAL_API` | `false` | Serve the original auth-tutorial endpoints. Migration only; see [legacy-tutorial-api.md](legacy-tutorial-api.md). |
 | `KEYORA_LEGACY_TUTORIAL_CLIENT_ID` | | Required with the above: the confidential application legacy users belong to. |
 
+## Transports
+
+The REST API is always served on `KEYORA_HTTP_ADDR`. The official binary and image also
+link the GraphQL and gRPC transports; all three expose the same operations with the
+same authentication.
+
+| Variable | Default | Description |
+|---|---|---|
+| `KEYORA_GRAPHQL_ENABLED` | `true` | Serve the [GraphQL API](graphql.md) at `POST /graphql` on the HTTP listener. |
+| `KEYORA_GRAPHQL_INTROSPECTION` | `true` | Allow schema introspection queries. |
+| `KEYORA_GRPC_ADDR` | *(empty)*; `:9090` in the container image | Listen address of the [gRPC API](grpc.md). Empty disables it. The listener is plaintext; terminate TLS at the proxy. |
+| `KEYORA_GRPC_REFLECTION` | `true` | Serve gRPC server reflection. |
+
 ## Observability and timeouts
 
 | Variable | Default | Description |

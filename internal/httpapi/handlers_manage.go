@@ -118,7 +118,6 @@ func (a *API) createApplication(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	a.invalidateOrigins()
 	respond(w, r, http.StatusCreated, applicationWithSecret{Application: app, ClientSecret: secret})
 	return nil
 }
@@ -166,7 +165,6 @@ func (a *API) updateApplication(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	a.invalidateOrigins()
 	respond(w, r, http.StatusOK, app)
 	return nil
 }
@@ -179,7 +177,6 @@ func (a *API) deleteApplication(w http.ResponseWriter, r *http.Request) error {
 	if err := a.svc.DeleteApplication(r.Context(), tenantID, r.PathValue("id"), m); err != nil {
 		return err
 	}
-	a.invalidateOrigins()
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

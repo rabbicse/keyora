@@ -135,7 +135,8 @@ public class SecurityConfig {
      * </ol>
      *
      * <p>The decoder is built from the JWKS URL directly. Spring's {@code issuer-uri}
-     * setting would try OIDC discovery, and Keyora does not serve a discovery document.
+     * setting would fetch Keyora's discovery document from the issuer URL at startup,
+     * which fails when Keyora is reached at another address (for example from a container).
      */
     @Bean
     JwtDecoder jwtDecoder(KeyoraProperties keyora) {

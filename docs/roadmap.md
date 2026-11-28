@@ -8,12 +8,11 @@ for a date. Items move to the [changelog](../CHANGELOG.md) when they ship.
 - **More of OpenID Connect.** The core is in place (ID tokens, `nonce`, userinfo,
   discovery). Still missing: `prompt` and `max_age`, `at_hash`, RP-initiated logout,
   and formal OpenID certification.
-- **Single sign-on.** A browser session at Keyora so that signing in to a second
-  application in the same tenant does not ask for the password again, with single
-  logout.
-- **Hosted pages beyond sign-in.** Registration, password reset and email verification
-  pages, with per-tenant branding.
-- **Consent screen**, for when applications are not all first-party.
+- **Single sign-on.** Signing in to a second application in the same tenant without
+  asking for the password again, with single logout. Keyora is API only, so this is an
+  API feature: the authorization request accepts proof of an existing session.
+- **Consent as an API**, for when applications are not all first-party: the sign-in
+  screen asks, Keyora records the answer.
 - **Multi-factor authentication.** TOTP first (RFC 6238), then recovery codes.
 - **Passkeys / WebAuthn.**
 

@@ -90,6 +90,28 @@ jobs:
         run: |
           go test -count=1 -v -run TestPostgresConformance ./... | grep -q -- '--- PASS: TestPostgresConformance'
 
+  transports:
+    name: ${{ matrix.transport.name }} transport
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        transport:
+          - { name: GraphQL, dir: transport/graphql }
+          - { name: gRPC, dir: transport/grpc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: ${{ matrix.transport.dir }}/go.sum
+      - name: Vet
+        working-directory: ${{ matrix.transport.dir }}
+        run: go vet ./...
+      - name: Test (race detector)
+        working-directory: ${{ matrix.transport.dir }}
+        run: go test -count=1 -race ./...
+
   adapters:
     name: Gin adapter and Go examples
     runs-on: ubuntu-latest
@@ -106,6 +128,7 @@ jobs:
         run: |
           (cd examples/golang/standard-library && go vet ./... && go build ./...)
           (cd examples/golang/gin && go vet ./... && go build ./...)
+          (cd examples/golang/pkce && go vet ./... && go build ./...)
 
   security:
     name: Vulnerability scan

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rabbicse/keyora/internal/domain"
@@ -57,6 +58,9 @@ type Service struct {
 	// both paths cost one PBKDF2 computation and do not differ in timing.
 	dummyHash string
 	legacy    *legacyState
+	// originsVersion changes whenever an application's allowed origins may
+	// have changed, so CORS caches in any transport know to reload.
+	originsVersion atomic.Uint64
 }
 
 func New(st store.Store, keys *security.KeyRing, mail mailer.Mailer, opt Options, log *slog.Logger) (*Service, error) {

@@ -29,15 +29,10 @@ func (h *harness) jwks() jwt.JWKS {
 
 func TestOpenIDConnect(t *testing.T) {
 	h, _, clientID := pkceSetup(t)
-	b := h.browser()
-	params := authParams(clientID)
-	params.Set("scope", "openid email profile")
-	params.Set("nonce", "n-0S6_WzA2Mj")
-	done := b.submit(b.open(params), "ada@example.com", password)
-	if done.Location == nil || done.Location.Query().Get("code") == "" {
-		t.Fatalf("no code: %d %s", done.Status, done.Body)
-	}
-	status, tok := h.token(exchange(clientID, done.Location.Query().Get("code")), "")
+	body := authBody(clientID, "ada@example.com", password)
+	body["scope"], body["nonce"] = "openid email profile", "n-0S6_WzA2Mj"
+	code := h.expect(h.authorize(body), 200, "").get(t, "code")
+	status, tok := h.token(exchange(clientID, code), "")
 	if status != 200 || tok["id_token"] == nil {
 		t.Fatalf("token response without id_token: %d %v", status, tok)
 	}
@@ -82,9 +77,8 @@ func TestOpenIDConnect(t *testing.T) {
 	h.expect(h.do("GET", "/api/v1/oauth/userinfo", "", nil), 401, "unauthenticated")
 
 	// Scopes control the claims: openid alone gives identity only.
-	params.Set("scope", "openid")
-	done = b.submit(b.open(params), "ada@example.com", password)
-	_, tok = h.token(exchange(clientID, done.Location.Query().Get("code")), "")
+	body["scope"] = "openid"
+	_, tok = h.token(exchange(clientID, h.expect(h.authorize(body), 200, "").get(t, "code")), "")
 	id, _ = jwt.Verify(tok["id_token"].(string), h.jwks().KeyFunc(), jwt.Validation{Now: h.env.Clock.Now})
 	if id.Email != "" || id.Name != "" || id.EmailVerified != nil {
 		t.Fatalf("claims released without their scope: %+v", id)

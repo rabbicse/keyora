@@ -1,0 +1,169 @@
+// Messages shared by the Keyora services: the resources the management API
+// works with and the token set every sign-in returns.
+//
+// No message carries a stored secret. Password hashes and client secret hashes
+// never leave the server; a client secret is returned once, in plain text, by
+// the two RPCs that create it (see ApplicationService).
+
+syntax = "proto3";
+
+package keyora.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/rabbicse/keyora/transport/grpc/keyorapb;keyorapb";
+
+// Tenant is the isolation boundary: applications, users, roles, permissions,
+// sessions and audit events all belong to exactly one tenant.
+message Tenant {
+  // UUID.
+  string id = 1;
+  // URL-safe name, unique across the installation, fixed at creation.
+  string slug = 2;
+  string name = 3;
+  // "active" or "suspended". Applications of a suspended tenant cannot
+  // authenticate and its tokens stop working.
+  string status = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// Application is a registered client of a tenant. Any application of a tenant
+// can sign in that tenant's users.
+message Application {
+  // UUID. This is the identifier the management RPCs take.
+  string id = 1;
+  string tenant_id = 2;
+  // Unique within the tenant.
+  string name = 3;
+  // "confidential" (has a client secret) or "public" (browser and mobile
+  // applications; identified by client_id alone and protected by PKCE).
+  string type = 4;
+  // The identifier the application authenticates with ("app_...").
+  string client_id = 5;
+  // Redirect URIs the authorization code flow may return to. Compared by
+  // exact string match.
+  repeated string redirect_uris = 6;
+  // Browser origins the application may be called from (see the "origin"
+  // metadata key in AuthService).
+  repeated string allowed_origins = 7;
+  // Access token lifetime in seconds.
+  int64 access_token_ttl_seconds = 8;
+  // Refresh token lifetime in seconds.
+  int64 refresh_token_ttl_seconds = 9;
+  // "active" or "disabled".
+  string status = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+// User is an account of a tenant.
+message User {
+  // UUID. It is the "sub" claim of the user's tokens.
+  string id = 1;
+  string tenant_id = 2;
+  // Lower-cased; unique within the tenant.
+  string email = 3;
+  string name = 4;
+  // "active" or "disabled".
+  string status = 5;
+  bool email_verified = 6;
+  // Set while the account is locked after too many failed sign-ins.
+  google.protobuf.Timestamp locked_until = 7;
+  // Unset until the first successful sign-in.
+  google.protobuf.Timestamp last_login_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+// Permission is a named capability that roles grant, such as "orders:read".
+message Permission {
+  string id = 1;
+  string tenant_id = 2;
+  // Unique within the tenant. Names starting with "keyora:" are reserved.
+  string name = 3;
+  string description = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// Role is a named set of permissions that is assigned to users.
+message Role {
+  string id = 1;
+  string tenant_id = 2;
+  // Unique within the tenant. "keyora-admin" is built in and makes its
+  // holders administrators of the tenant.
+  string name = 3;
+  string description = 4;
+  // Names of the permissions the role grants.
+  repeated string permissions = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+// Session is one sign-in on one device. Refresh tokens rotate inside it, and
+// revoking it invalidates every token issued from it.
+message Session {
+  string id = 1;
+  string tenant_id = 2;
+  string user_id = 3;
+  // The application the user signed in through.
+  string application_id = 4;
+  // Client address recorded at sign-in.
+  string ip = 5;
+  string user_agent = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp last_used_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  // Unset while the session has not been revoked.
+  google.protobuf.Timestamp revoked_at = 10;
+}
+
+// AuditEvent is one entry of a tenant's security trail.
+message AuditEvent {
+  string id = 1;
+  string tenant_id = 2;
+  // Event name, for example "user.login.succeeded" or "application.created".
+  string type = 3;
+  // "user", "application", "root" or "anonymous".
+  string actor_type = 4;
+  // The user ID or client ID of the actor; "admin-key" for the root key.
+  string actor_id = 5;
+  // The resource the event is about, when there is one.
+  string target_id = 6;
+  string ip = 7;
+  string user_agent = 8;
+  // The request ID of the call that caused the event (see the x-request-id
+  // metadata key).
+  string request_id = 9;
+  // Event-specific values, for example {"session_id": "..."}.
+  map<string, string> metadata = 10;
+  google.protobuf.Timestamp created_at = 11;
+}
+
+// Tokens is what a successful sign-in, refresh or token request returns.
+message Tokens {
+  // A signed JWT. Send it as "authorization: Bearer <access_token>".
+  string access_token = 1;
+  // Always "Bearer".
+  string token_type = 2;
+  // Lifetime of the access token in seconds.
+  int64 expires_in = 3;
+  // Opaque and single use: each refresh returns a new one. Empty for the
+  // client_credentials grant.
+  string refresh_token = 4;
+  // Lifetime of the refresh token in seconds.
+  int64 refresh_expires_in = 5;
+  // The session the tokens belong to. Empty for the client_credentials grant.
+  string session_id = 6;
+  // OpenID Connect ID token. Set only by the authorization code flow when the
+  // "openid" scope was requested. It describes the sign-in to the application
+  // and is not accepted as a bearer credential.
+  string id_token = 7;
+}
+
+// StringList wraps a list so that a partial update can tell "leave the list
+// as it is" (field not set) from "replace it", including with an empty list
+// (field set, no values).
+message StringList {
+  repeated string values = 1;
+}

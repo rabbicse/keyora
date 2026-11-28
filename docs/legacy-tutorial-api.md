@@ -152,13 +152,13 @@ with one of:
 
 | If the client is… | Use | Calls |
 |---|---|---|
-| A browser or mobile app | Authorization code flow with PKCE | `GET /api/v1/oauth/authorize` → `POST /api/v1/oauth/token` |
+| A browser or mobile app | Authorization code flow with PKCE | `POST /api/v1/oauth/authorize` → `POST /api/v1/oauth/token` |
 | A backend with its own login form | Direct login | `POST /api/v1/auth/login` |
 
 | Legacy call | Replacement |
 |---|---|
 | `POST /users/register` with salt + verifier | `POST /api/v1/auth/register` with email + password (over TLS). No client-side Argon2. |
-| `/login/challenge` + `/login/verify` + `GET /authorize` | The browser is sent to `/api/v1/oauth/authorize` with a PKCE challenge; Keyora shows the sign-in page |
+| `/login/challenge` + `/login/verify` + `GET /authorize` | One call: `POST /api/v1/oauth/authorize` with the email, the password and a PKCE challenge |
 | `POST /token` with `client_secret` | `POST /api/v1/oauth/token` with `code_verifier` (and the secret, for confidential apps) |
 | `POST /token` `grant_type=refresh_token` | `POST /api/v1/oauth/token` `grant_type=refresh_token`, or `POST /api/v1/auth/refresh` |
 | `POST /oauth/introspect` | `POST /api/v1/auth/introspect` |

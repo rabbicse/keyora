@@ -1,0 +1,156 @@
+syntax = "proto3";
+
+package keyora.v1;
+
+import "keyora/v1/types.proto";
+
+option go_package = "github.com/rabbicse/keyora/transport/grpc/keyorapb;keyorapb";
+
+// RoleService manages the permissions and roles of a tenant. It is the gRPC
+// form of the REST routes under /api/v1/tenants/{tenant_id}/permissions and
+// /api/v1/tenants/{tenant_id}/roles. Roles are assigned to users with
+// UserService.
+//
+// Every RPC needs "authorization: Bearer <credential>" metadata, where the
+// credential is the root admin key or the access token of an administrator
+// of the tenant named in the request. An administrator of another tenant
+// gets PERMISSION_DENIED.
+//
+// The permission "keyora:admin" and the role "keyora-admin" are built in.
+// Attempts to delete or rename them, or to take the permission away from the
+// role, fail with PERMISSION_DENIED and the reason "reserved".
+service RoleService {
+  // CreatePermission defines a permission. Names starting with "keyora:" are
+  // reserved.
+  rpc CreatePermission(CreatePermissionRequest) returns (CreatePermissionResponse);
+
+  // ListPermissions lists the tenant's permissions.
+  rpc ListPermissions(ListPermissionsRequest) returns (ListPermissionsResponse);
+
+  // DeletePermission removes a permission, including from every role that
+  // grants it.
+  rpc DeletePermission(DeletePermissionRequest) returns (DeletePermissionResponse);
+
+  // CreateRole creates a role, optionally with an initial set of
+  // permissions.
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+
+  // ListRoles lists the tenant's roles.
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+
+  // GetRole returns one role.
+  rpc GetRole(GetRoleRequest) returns (GetRoleResponse);
+
+  // UpdateRole changes a role's name or description; only the fields that
+  // are set change.
+  rpc UpdateRole(UpdateRoleRequest) returns (UpdateRoleResponse);
+
+  // DeleteRole removes a role and takes it away from every user who has it.
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
+
+  // SetRolePermissions replaces the complete set of permissions a role
+  // grants.
+  rpc SetRolePermissions(SetRolePermissionsRequest) returns (SetRolePermissionsResponse);
+}
+
+message CreatePermissionRequest {
+  string tenant_id = 1;
+  // 1 to 100 letters, digits, ':', '_', '.' or '-'; unique within the tenant.
+  string name = 2;
+  // Optional; at most 500 characters.
+  string description = 3;
+}
+
+message CreatePermissionResponse {
+  Permission permission = 1;
+}
+
+message ListPermissionsRequest {
+  string tenant_id = 1;
+  // Page size, 1 to 100. 0 means the default of 20.
+  int32 limit = 2;
+  // Number of permissions to skip.
+  int32 offset = 3;
+}
+
+message ListPermissionsResponse {
+  repeated Permission permissions = 1;
+  // Number of permissions in total, across all pages.
+  int64 total = 2;
+}
+
+message DeletePermissionRequest {
+  string tenant_id = 1;
+  string id = 2;
+}
+
+message DeletePermissionResponse {}
+
+message CreateRoleRequest {
+  string tenant_id = 1;
+  // 1 to 100 letters, digits, ':', '_', '.' or '-'; unique within the tenant.
+  string name = 2;
+  // Optional; at most 500 characters.
+  string description = 3;
+  // Names of permissions that already exist in the tenant.
+  repeated string permissions = 4;
+}
+
+message CreateRoleResponse {
+  Role role = 1;
+}
+
+message ListRolesRequest {
+  string tenant_id = 1;
+  // Page size, 1 to 100. 0 means the default of 20.
+  int32 limit = 2;
+  // Number of roles to skip.
+  int32 offset = 3;
+}
+
+message ListRolesResponse {
+  repeated Role roles = 1;
+  // Number of roles in total, across all pages.
+  int64 total = 2;
+}
+
+message GetRoleRequest {
+  string tenant_id = 1;
+  string id = 2;
+}
+
+message GetRoleResponse {
+  Role role = 1;
+}
+
+// UpdateRoleRequest changes only the fields that are set.
+message UpdateRoleRequest {
+  string tenant_id = 1;
+  string id = 2;
+  optional string name = 3;
+  optional string description = 4;
+}
+
+message UpdateRoleResponse {
+  Role role = 1;
+}
+
+message DeleteRoleRequest {
+  string tenant_id = 1;
+  string id = 2;
+}
+
+message DeleteRoleResponse {}
+
+message SetRolePermissionsRequest {
+  string tenant_id = 1;
+  // The role's id.
+  string id = 2;
+  // Names of permissions that already exist in the tenant. The role grants
+  // exactly these afterwards; an empty list removes them all.
+  repeated string permissions = 3;
+}
+
+message SetRolePermissionsResponse {
+  Role role = 1;
+}

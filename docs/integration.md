@@ -112,8 +112,9 @@ to. Ones used in the examples:
 
 If there is no backend to hold a secret, register a **public** application and use the
 [authorization code flow with PKCE](authentication.md#authorization-code-flow-with-pkce):
-the user signs in on Keyora's page and your app never touches the password. This is the
-recommended setup for single-page and mobile apps.
+your app requests a one-time code from Keyora with the user's credentials and a PKCE
+challenge, and exchanges the code for tokens. No client
+secret is involved. This is the recommended setup for single-page and mobile apps.
 
 ```sh
 curl -X POST localhost:8080/api/v1/tenants/$TENANT_ID/applications \
@@ -123,8 +124,9 @@ curl -X POST localhost:8080/api/v1/tenants/$TENANT_ID/applications \
        "allowed_origins": ["https://app.example.com"]}'
 ```
 
-`redirect_uris` is where Keyora may send the user back; `allowed_origins` lets the
-page's JavaScript call the token endpoint. For a native app, use a claimed `https`
+`redirect_uris` lists the callback addresses a code may be issued for;
+`allowed_origins` lets the page's JavaScript call the authorization and token
+endpoints. For a native app, use a claimed `https`
 link or a private-use scheme such as `com.example.app:/callback`.
 
 A public application can also call the direct login endpoint with only its

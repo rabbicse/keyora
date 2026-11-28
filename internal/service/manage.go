@@ -168,6 +168,7 @@ func (s *Service) CreateApplication(ctx context.Context, tenantID string, in App
 		}
 		return nil, "", err
 	}
+	s.originsVersion.Add(1)
 	s.audit(ctx, tenantID, "application.created", m, a.ID, map[string]string{"client_id": a.ClientID, "type": a.Type})
 	return a, secret, nil
 }
@@ -198,6 +199,7 @@ func (s *Service) UpdateApplication(ctx context.Context, tenantID, id string, in
 		}
 		return nil, err
 	}
+	s.originsVersion.Add(1)
 	s.audit(ctx, tenantID, "application.updated", m, a.ID, nil)
 	return a, nil
 }
@@ -206,6 +208,7 @@ func (s *Service) DeleteApplication(ctx context.Context, tenantID, id string, m 
 	if err := s.store.DeleteApplication(ctx, tenantID, id); err != nil {
 		return err
 	}
+	s.originsVersion.Add(1)
 	s.audit(ctx, tenantID, "application.deleted", m, id, nil)
 	return nil
 }
@@ -227,6 +230,12 @@ func (s *Service) RotateApplicationSecret(ctx context.Context, tenantID, id stri
 	s.audit(ctx, tenantID, "application.secret_rotated", m, a.ID, nil)
 	return a, secret, nil
 }
+
+// OriginsVersion changes every time an application is created, updated or
+// deleted through this service, whichever transport made the change. A cache
+// of AllowedOrigins reloads when it sees a new value. (Other instances of
+// Keyora are not notified; their caches expire on their own schedule.)
+func (s *Service) OriginsVersion() uint64 { return s.originsVersion.Load() }
 
 // AllowedOrigins lists every origin registered on an active application.
 func (s *Service) AllowedOrigins(ctx context.Context) ([]string, error) {

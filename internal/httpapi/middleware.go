@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,11 +43,13 @@ func metaFrom(r *http.Request) service.Meta {
 
 // resolveIP returns the peer address, or the address appended by the reverse
 // proxy when proxy headers are trusted. Only the right-most X-Forwarded-For
-// entry is used: everything to its left is supplied by the client.
+// entry is used: everything to its left is supplied by the client. A proxy
+// may add its own header line rather than extend the client's, so the entry
+// is taken from the last line, never the first.
 func (a *API) resolveIP(r *http.Request) string {
 	if a.cfg.TrustProxyHeaders {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
+		if lines := r.Header.Values("X-Forwarded-For"); len(lines) > 0 {
+			parts := strings.Split(lines[len(lines)-1], ",")
 			if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
 				return ip.String()
 			}
@@ -140,10 +141,8 @@ func (a *API) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") || strings.HasPrefix(r.URL.Path, "/api/v1/oauth/") || a.legacyPath(r.URL.Path) {
-		if ok, wait := a.cfg.Limiter.Allow(clientIP(r)); !ok {
-			e := *domain.ErrRateLimited
-			e.Details = map[string]string{"retry_after_seconds": strconv.Itoa(int(wait.Seconds()) + 1)}
-			a.respondError(w, r, &e)
+		if err := a.gate.Throttle(clientIP(r)); err != nil {
+			a.respondError(w, r, err)
 			return
 		}
 	}
@@ -177,12 +176,15 @@ func (a *API) cors(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // originCache holds the union of statically configured origins and the
-// origins registered on applications, refreshed at most every 30 seconds.
+// origins registered on applications. It reloads when the service reports a
+// change to any application (made through any transport) and at least every
+// 30 seconds, which picks up changes made by other instances.
 type originCache struct {
 	mu      sync.Mutex
 	static  map[string]bool
 	dynamic map[string]bool
 	loaded  time.Time
+	version uint64
 }
 
 func (a *API) originAllowed(ctx context.Context, origin string) bool {
@@ -192,7 +194,8 @@ func (a *API) originAllowed(ctx context.Context, origin string) bool {
 	if c.static[origin] {
 		return true
 	}
-	if c.dynamic == nil || time.Since(c.loaded) > 30*time.Second {
+	version := a.svc.OriginsVersion()
+	if c.dynamic == nil || version != c.version || time.Since(c.loaded) > 30*time.Second {
 		list, err := a.svc.AllowedOrigins(ctx)
 		if err != nil {
 			a.log.Error("could not load allowed origins", "error", err)
@@ -201,16 +204,10 @@ func (a *API) originAllowed(ctx context.Context, origin string) bool {
 			for _, o := range list {
 				c.dynamic[o] = true
 			}
-			c.loaded = time.Now()
+			c.loaded, c.version = time.Now(), version
 		}
 	}
 	return c.dynamic[origin]
-}
-
-func (a *API) invalidateOrigins() {
-	a.origins.mu.Lock()
-	a.origins.dynamic = nil
-	a.origins.mu.Unlock()
 }
 
 // ---- metrics ----

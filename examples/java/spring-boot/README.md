@@ -267,8 +267,9 @@ is fetched on first use and cached. For every request the decoder checks:
 Spring Security does not check the audience unless you add a validator, so the
 configuration adds one. Without it, a token that Keyora issued to a different application
 would be accepted. The decoder is configured with the JWKS URL directly and not with
-Spring's `issuer-uri` property, because that property relies on OIDC discovery and Keyora
-does not serve a discovery document.
+Spring's `issuer-uri` property. Keyora does serve a discovery document, but `issuer-uri`
+fetches it from the issuer URL at startup, which fails when the example reaches Keyora at
+a different address than the public issuer (for example from inside a container).
 
 **Authorization.** A `JwtAuthenticationConverter` turns the token's claims into Spring
 Security authorities: each entry of `permissions` keeps its name (`notes:read`) and each

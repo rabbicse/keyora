@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package keyora.v1;
+
+import "keyora/v1/types.proto";
+
+option go_package = "github.com/rabbicse/keyora/transport/grpc/keyorapb;keyorapb";
+
+// SessionService lets an administrator see and end the sessions of a
+// tenant's users. It is the gRPC form of the REST routes under
+// /api/v1/tenants/{tenant_id}/sessions. Users manage their own sessions with
+// AccountService.
+//
+// Every RPC needs "authorization: Bearer <credential>" metadata, where the
+// credential is the root admin key or the access token of an administrator
+// of the tenant named in the request. An administrator of another tenant
+// gets PERMISSION_DENIED.
+service SessionService {
+  // ListSessions lists the tenant's sessions, optionally filtered.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+
+  // RevokeSession ends a session. Its access tokens and refresh token stop
+  // working at once. Revoking a session that is already revoked succeeds.
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
+}
+
+message ListSessionsRequest {
+  string tenant_id = 1;
+  // Page size, 1 to 100. 0 means the default of 20.
+  int32 limit = 2;
+  // Number of sessions to skip.
+  int32 offset = 3;
+  // Filter: sessions of this user only. Empty means all users.
+  string user_id = 4;
+  // Filter: leave out sessions that are revoked or expired.
+  bool active_only = 5;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+  // Number of matching sessions in total, across all pages.
+  int64 total = 2;
+}
+
+message RevokeSessionRequest {
+  string tenant_id = 1;
+  string id = 2;
+}
+
+message RevokeSessionResponse {}
